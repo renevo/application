@@ -8,12 +8,21 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
-	"github.com/portcullis/application/confighcl"
+	"github.com/matryer/is"
+	"github.com/renevo/application/confighcl"
 )
 
 func TestHCL(t *testing.T) {
-	os.Setenv("TEST", "set-from-env")
-	defer os.Unsetenv("TEST")
+	is := is.New(t)
+
+	if err := os.Setenv("TEST", "set-from-env"); err != nil {
+		t.Fatalf("set env failed: %v", err)
+	}
+	defer func() {
+		if err := os.Unsetenv("TEST"); err != nil {
+			t.Fatalf("unset env failed: %v", err)
+		}
+	}()
 
 	cfg := &Configuration{}
 
@@ -55,13 +64,15 @@ func TestHCL(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
 			file, diags := hclsyntax.ParseConfig([]byte(test.Input), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+			is.True(!diags.HasErrors()) // parsing the fixture should succeed
 			if diags.HasErrors() {
-				t.Fatalf(diags.Error())
+				is.Fail() // stop here so we do not continue with invalid input
 			}
 
 			diags = confighcl.DecodeBody(file.Body, cfg.EvalContext(context.Background()), test.Value)
+			is.True(!diags.HasErrors()) // decoding the fixture should succeed
 			if diags.HasErrors() {
-				t.Fatalf(diags.Error())
+				is.Fail() // stop here so we do not continue with invalid decoded state
 			}
 
 			t.Logf("%+v", test.Value)

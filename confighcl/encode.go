@@ -36,7 +36,7 @@ import (
 func EncodeIntoBody(val interface{}, dst *hclwrite.Body) {
 	rv := reflect.ValueOf(val)
 	ty := rv.Type()
-	if ty.Kind() == reflect.Ptr {
+	if ty.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 		ty = rv.Type()
 	}
@@ -60,7 +60,7 @@ func EncodeIntoBody(val interface{}, dst *hclwrite.Body) {
 func EncodeAsBlock(val interface{}, blockType string) *hclwrite.Block {
 	rv := reflect.ValueOf(val)
 	ty := rv.Type()
-	if ty.Kind() == reflect.Ptr {
+	if ty.Kind() == reflect.Pointer {
 		rv = rv.Elem()
 		ty = rv.Type()
 	}
@@ -107,7 +107,7 @@ func populateBody(rv reflect.Value, ty reflect.Type, tags *fieldTags, dst *hclwr
 		fieldTy := field.Type
 		fieldVal := rv.Field(fieldIdx)
 
-		if fieldTy.Kind() == reflect.Ptr {
+		if fieldTy.Kind() == reflect.Pointer {
 			fieldTy = fieldTy.Elem()
 			fieldVal = fieldVal.Elem()
 		}
@@ -120,7 +120,7 @@ func populateBody(rv reflect.Value, ty reflect.Type, tags *fieldTags, dst *hclwr
 			if !fieldVal.IsValid() {
 				continue // ignore (field value is nil pointer)
 			}
-			if fieldTy.Kind() == reflect.Ptr && fieldVal.IsNil() {
+			if fieldTy.Kind() == reflect.Pointer && fieldVal.IsNil() {
 				continue // ignore
 			}
 			if prevWasBlock {
@@ -162,7 +162,7 @@ func populateBody(rv reflect.Value, ty reflect.Type, tags *fieldTags, dst *hclwr
 					if !elemVal.IsValid() {
 						continue // ignore (elem value is nil pointer)
 					}
-					if elemTy.Kind() == reflect.Ptr && elemVal.IsNil() {
+					if elemTy.Kind() == reflect.Pointer && elemVal.IsNil() {
 						continue // ignore
 					}
 					block := EncodeAsBlock(elemVal.Interface(), name)
@@ -176,7 +176,7 @@ func populateBody(rv reflect.Value, ty reflect.Type, tags *fieldTags, dst *hclwr
 				if !fieldVal.IsValid() {
 					continue // ignore (field value is nil pointer)
 				}
-				if elemTy.Kind() == reflect.Ptr && fieldVal.IsNil() {
+				if elemTy.Kind() == reflect.Pointer && fieldVal.IsNil() {
 					continue // ignore
 				}
 				block := EncodeAsBlock(fieldVal.Interface(), name)

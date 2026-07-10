@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/portcullis/config"
+	"github.com/renevo/config"
 )
 
 // Application defines an instance of an application

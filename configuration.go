@@ -11,8 +11,8 @@ import (
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/json"
-	"github.com/portcullis/application/confighcl"
-	"github.com/portcullis/application/confighcl/funcs"
+	"github.com/renevo/application/confighcl"
+	"github.com/renevo/application/confighcl/funcs"
 	"github.com/zclconf/go-cty/cty"
 )
 

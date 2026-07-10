@@ -29,7 +29,7 @@ type Configurable interface {
 	// structure. This structure will be written to directly with the
 	// decoded configuration. If this returns nil, then it is as if
 	// Configurable was not implemented.
-	Config() (interface{}, error)
+	Config() (any, error)
 }
 
 // Installer allows for modules to install things before and modul.PreStart is called, and is used in the application.Install function
@@ -45,5 +45,5 @@ type ConfigurableNotify interface {
 
 	// ConfigSet is called with the value of the configuration after
 	// decoding is complete successfully.
-	ConfigSet(interface{}) error
+	ConfigSet(any) error
 }

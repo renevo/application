@@ -22,7 +22,7 @@ import (
 func ImpliedBodySchema(val interface{}) (schema *hcl.BodySchema, partial bool) {
 	ty := reflect.TypeOf(val)
 
-	if ty.Kind() == reflect.Ptr {
+	if ty.Kind() == reflect.Pointer {
 		ty = ty.Elem()
 	}
 
@@ -53,7 +53,7 @@ func ImpliedBodySchema(val interface{}) (schema *hcl.BodySchema, partial bool) {
 			// indicated via a null value, so we don't specify that
 			// the field is required during decoding.
 			required = false
-		case field.Type.Kind() != reflect.Ptr && !optional:
+		case field.Type.Kind() != reflect.Pointer && !optional:
 			required = true
 		default:
 			required = false
@@ -77,7 +77,7 @@ func ImpliedBodySchema(val interface{}) (schema *hcl.BodySchema, partial bool) {
 		if fty.Kind() == reflect.Slice {
 			fty = fty.Elem()
 		}
-		if fty.Kind() == reflect.Ptr {
+		if fty.Kind() == reflect.Pointer {
 			fty = fty.Elem()
 		}
 		if fty.Kind() != reflect.Struct {

@@ -31,7 +31,7 @@ import (
 // integration use-cases.
 func DecodeBody(body hcl.Body, ctx *hcl.EvalContext, val interface{}) hcl.Diagnostics {
 	rv := reflect.ValueOf(val)
-	if rv.Kind() != reflect.Ptr {
+	if rv.Kind() != reflect.Pointer {
 		panic(fmt.Sprintf("target value must be a pointer, not %s", rv.Type().String()))
 	}
 
@@ -41,7 +41,7 @@ func DecodeBody(body hcl.Body, ctx *hcl.EvalContext, val interface{}) hcl.Diagno
 // DecodeLeftoverBody is...
 func DecodeLeftoverBody(body hcl.Body, ctx *hcl.EvalContext, val interface{}) (hcl.Body, hcl.Diagnostics) {
 	rv := reflect.ValueOf(val)
-	if rv.Kind() != reflect.Ptr {
+	if rv.Kind() != reflect.Pointer {
 		panic(fmt.Sprintf("target value must be a pointer, not %s", rv.Type().String()))
 	}
 
@@ -172,7 +172,7 @@ func decodeBodyToStruct(body hcl.Body, ctx *hcl.EvalContext, val reflect.Value, 
 			isSlice = true
 			ty = ty.Elem()
 		}
-		if ty.Kind() == reflect.Ptr {
+		if ty.Kind() == reflect.Pointer {
 			isPtr = true
 			ty = ty.Elem()
 		}
@@ -211,7 +211,7 @@ func decodeBodyToStruct(body hcl.Body, ctx *hcl.EvalContext, val reflect.Value, 
 		case isSlice:
 			elemType := ty
 			if isPtr {
-				elemType = reflect.PtrTo(ty)
+				elemType = reflect.PointerTo(ty)
 			}
 			sli := val.Field(fieldIdx)
 			if sli.IsNil() {
