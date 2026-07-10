@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/hashicorp/hcl/v2 v2.22.0
 	github.com/matryer/is v1.4.1
-	github.com/renevo/config v0.0.0-20260710042535-7f946a193725
+	github.com/renevo/config v0.2.0
 	github.com/zclconf/go-cty v1.15.0
 	github.com/zclconf/go-cty-yaml v1.0.3
 )
