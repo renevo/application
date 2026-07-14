@@ -68,28 +68,28 @@ func TestWriteConfigTemplate(t *testing.T) {
 		WithModule("worker", module),
 	)
 	is := is.New(t)
-	is.NoErr(err)
+	is.NoErr(err) // application construction should accept a missing configured file
 
 	var output bytes.Buffer
-	is.NoErr(application.WriteConfigTemplate(context.Background(), &output))
-	is.Equal(application.State(), StateStopped)
-	is.True(!module.started)
+	is.NoErr(application.WriteConfigTemplate(context.Background(), &output)) // template generation should use registered defaults without loading sources
+	is.Equal(application.State(), StateStopped)                              // successful generation should leave the terminal application stopped
+	is.True(!module.started)                                                 // template generation should not start modules
 
 	source := output.String()
-	is.True(strings.Contains(source, "enabled = true"))
-	is.True(strings.Contains(source, "count = 10"))
-	is.True(strings.Contains(source, "ratio = 1.5"))
-	is.True(strings.Contains(source, "name = \"worker\""))
-	is.True(strings.Contains(source, "timeout = \"5s\""))
-	is.True(strings.Contains(source, "# Route prefix\nprefix = \"/api\""))
-	is.True(strings.Contains(source, "# HTTP route\n# route \"example\" {"))
+	is.True(strings.Contains(source, "enabled = true"))                      // booleans should use native HCL literals
+	is.True(strings.Contains(source, "count = 10"))                          // integers should use native HCL literals and ignore environment overrides
+	is.True(strings.Contains(source, "ratio = 1.5"))                         // floating-point defaults should use native HCL literals
+	is.True(strings.Contains(source, "name = \"worker\""))                   // strings should remain quoted HCL strings
+	is.True(strings.Contains(source, "timeout = \"5s\""))                    // durations should use readable quoted strings
+	is.True(strings.Contains(source, "# Route prefix\nprefix = \"/api\""))   // structured descriptions should precede active defaults
+	is.True(strings.Contains(source, "# HTTP route\n# route \"example\" {")) // empty repeated blocks should produce one commented example
 
 	_, diags := hclsyntax.ParseConfig(output.Bytes(), "generated.hcl", hcl.Pos{Line: 1, Column: 1})
-	is.True(!diags.HasErrors())
+	is.True(!diags.HasErrors()) // generated active content should parse as native HCL
 
 	generatedFile := filepath.Join(t.TempDir(), "generated.hcl")
-	is.NoErr(os.WriteFile(generatedFile, output.Bytes(), 0o600))
-	is.NoErr(os.Unsetenv("WORKER_COUNT"))
+	is.NoErr(os.WriteFile(generatedFile, output.Bytes(), 0o600)) // round-trip fixture should be writable
+	is.NoErr(os.Unsetenv("WORKER_COUNT"))                        // round-trip validation should isolate file values from environment precedence
 	roundTripModule := newTemplateTestModule()
 	roundTripModule.enabled = false
 	roundTripModule.count = 0
@@ -102,27 +102,27 @@ func TestWriteConfigTemplate(t *testing.T) {
 		WithConfigFile(generatedFile),
 		WithModule("worker", roundTripModule),
 	)
-	is.NoErr(err)
-	is.NoErr(roundTrip.Validate(context.Background()))
-	is.Equal(roundTripModule.enabled, true)
-	is.Equal(roundTripModule.count, 10)
-	is.Equal(roundTripModule.ratio, 1.5)
-	is.Equal(roundTripModule.name, "worker")
-	is.Equal(roundTripModule.timeout, 5*time.Second)
-	is.Equal(roundTripModule.config.Prefix, "/api")
+	is.NoErr(err)                                      // fresh application construction should accept generated HCL
+	is.NoErr(roundTrip.Validate(context.Background())) // generated active defaults should decode successfully
+	is.Equal(roundTripModule.enabled, true)            // boolean default should survive the HCL round trip
+	is.Equal(roundTripModule.count, 10)                // integer default should survive the HCL round trip
+	is.Equal(roundTripModule.ratio, 1.5)               // float default should survive the HCL round trip
+	is.Equal(roundTripModule.name, "worker")           // string default should survive the HCL round trip
+	is.Equal(roundTripModule.timeout, 5*time.Second)   // duration default should survive the HCL round trip
+	is.Equal(roundTripModule.config.Prefix, "/api")    // structured attribute default should survive the HCL round trip
 
 	err = application.Run(context.Background())
-	is.True(errors.Is(err, ErrInvalidState))
+	is.True(errors.Is(err, ErrInvalidState)) // successful template generation should make later Run invalid
 
 	repeatedApplication, err := New(
 		"test", "1.0.0",
 		WithConfigFile(missingConfig),
 		WithModule("worker", newTemplateTestModule()),
 	)
-	is.NoErr(err)
+	is.NoErr(err) // equivalent fresh application construction should succeed
 	var repeatedOutput bytes.Buffer
-	is.NoErr(repeatedApplication.WriteConfigTemplate(context.Background(), &repeatedOutput))
-	is.Equal(repeatedOutput.Bytes(), output.Bytes())
+	is.NoErr(repeatedApplication.WriteConfigTemplate(context.Background(), &repeatedOutput)) // repeated generation should succeed
+	is.Equal(repeatedOutput.Bytes(), output.Bytes())                                         // equivalent applications should produce deterministic bytes
 }
 
 func TestScalarTemplateValue(t *testing.T) {
@@ -155,11 +155,11 @@ func TestScalarTemplateValue(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			value, err := scalarTemplateValue(templateSetting{path: "test", value: test.value, valueType: test.valueType})
 			is := is.New(t)
-			is.NoErr(err)
+			is.NoErr(err) // supported scalar default should convert to a cty value
 			body := hclwrite.NewEmptyFile().Body()
 			body.SetAttributeValue("value", value)
 			source := string(hclwrite.Format(body.BuildTokens(nil).Bytes()))
-			is.True(strings.Contains(source, "value = "+test.want))
+			is.True(strings.Contains(source, "value = "+test.want)) // generated token type and value should match the scalar contract
 		})
 	}
 }
@@ -168,32 +168,32 @@ func TestWriteConfigTemplateFailures(t *testing.T) {
 	t.Run("nil writer", func(t *testing.T) {
 		application, err := New("test", "1.0.0")
 		is := is.New(t)
-		is.NoErr(err)
-		is.True(application.WriteConfigTemplate(context.Background(), nil) != nil)
-		is.Equal(application.State(), StateNew)
+		is.NoErr(err)                                                              // application construction should succeed
+		is.True(application.WriteConfigTemplate(context.Background(), nil) != nil) // nil writers should be rejected
+		is.Equal(application.State(), StateNew)                                    // precondition failure should preserve the new state
 	})
 
 	t.Run("writer error", func(t *testing.T) {
 		application, err := New("test", "1.0.0", WithModule("worker", newTemplateTestModule()))
 		is := is.New(t)
-		is.NoErr(err)
+		is.NoErr(err) // application construction should succeed
 		err = application.WriteConfigTemplate(context.Background(), errorWriter{})
-		is.True(errors.Is(err, errTemplateWrite))
-		is.Equal(application.State(), StateFailed)
+		is.True(errors.Is(err, errTemplateWrite))  // writer errors should remain inspectable
+		is.Equal(application.State(), StateFailed) // write failure after initialization should fail the application
 	})
 
 	t.Run("configuration collision", func(t *testing.T) {
 		module := newTemplateTestModule()
 		application, err := New("test", "1.0.0", WithModule("worker", module))
 		is := is.New(t)
-		is.NoErr(err)
+		is.NoErr(err) // application construction should succeed
 		application.settings.Setting("prefix", new(string), "Conflicting prefix")
 
 		var output bytes.Buffer
 		err = application.WriteConfigTemplate(context.Background(), &output)
-		is.True(err != nil)
-		is.Equal(output.Len(), 0)
-		is.Equal(application.State(), StateFailed)
+		is.True(err != nil)                        // scalar and structured ownership collision should fail generation
+		is.Equal(output.Len(), 0)                  // pre-write rendering failure should not produce partial output
+		is.Equal(application.State(), StateFailed) // rendering failure after initialization should fail the application
 	})
 }
 
@@ -226,10 +226,10 @@ func TestWriteConfigTemplateRejectsBindingAfterRootMap(t *testing.T) {
 		WithModule("struct", &templateBindingModule{target: &structured}),
 	)
 	is := is.New(t)
-	is.NoErr(err)
+	is.NoErr(err) // application construction should accept both binding modules
 
 	var output bytes.Buffer
 	err = application.WriteConfigTemplate(context.Background(), &output)
-	is.True(err != nil)
-	is.Equal(output.Len(), 0)
+	is.True(err != nil)       // a binding after a root map consumer should be rejected
+	is.Equal(output.Len(), 0) // binding ownership failure should not produce partial output
 }

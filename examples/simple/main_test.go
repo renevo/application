@@ -29,13 +29,13 @@ func TestWriteConfigTemplate(t *testing.T) {
 	}
 
 	is := is.New(t)
-	is.NoErr(writeConfigTemplate(newApplication(), filename))
+	is.NoErr(writeConfigTemplate(newApplication(), filename)) // generation should create a new selected configuration file
 	source, err := os.ReadFile(filename)
-	is.NoErr(err)
-	is.True(len(source) > 0)
+	is.NoErr(err)            // generated configuration file should be readable
+	is.True(len(source) > 0) // successful generation should write HCL content
 
 	err = writeConfigTemplate(newApplication(), filename)
-	is.True(errors.Is(err, os.ErrExist))
+	is.True(errors.Is(err, os.ErrExist)) // generation should refuse to overwrite an existing file
 }
 
 type failingInitializeModule struct{}
@@ -50,10 +50,10 @@ func TestWriteConfigTemplateRemovesFailedFile(t *testing.T) {
 	filename := filepath.Join(t.TempDir(), "application.hcl")
 	app, err := application.New("test", "1.0.0", application.WithModule("failed", new(failingInitializeModule)))
 	is := is.New(t)
-	is.NoErr(err)
+	is.NoErr(err) // application construction should accept the failing initializer module
 
 	err = writeConfigTemplate(app, filename)
-	is.True(err != nil)
+	is.True(err != nil) // initialization failure should propagate from generation
 	_, err = os.Stat(filename)
-	is.True(errors.Is(err, os.ErrNotExist))
+	is.True(errors.Is(err, os.ErrNotExist)) // failed generation should remove the exclusively created file
 }
