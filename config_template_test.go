@@ -83,6 +83,7 @@ func TestWriteConfigTemplate(t *testing.T) {
 	is.True(strings.Contains(source, "timeout = \"5s\""))                    // durations should use readable quoted strings
 	is.True(strings.Contains(source, "# Route prefix\nprefix = \"/api\""))   // structured descriptions should precede active defaults
 	is.True(strings.Contains(source, "# HTTP route\n# route \"example\" {")) // empty repeated blocks should produce one commented example
+	is.True(strings.Contains(source, "enabled = true\n\n  # Worker name"))   // described scalar settings should be separated by a blank line
 
 	_, diags := hclsyntax.ParseConfig(output.Bytes(), "generated.hcl", hcl.Pos{Line: 1, Column: 1})
 	is.True(!diags.HasErrors()) // generated active content should parse as native HCL

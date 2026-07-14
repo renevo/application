@@ -28,10 +28,11 @@ func TestAppendTemplate(t *testing.T) {
 	is.NoErr(err) // initialized structured defaults should generate successfully
 
 	source := string(hclwrite.Format(file.Bytes()))
-	is.True(strings.Contains(source, "# Enable routing\nenabled = false"))           // optional non-pointer zero values should remain active
-	is.True(strings.Contains(source, "# HTTP route\n# route \"example\" {"))         // empty repeated blocks should produce one commented example
-	is.True(strings.Contains(source, "#   # Route destination\n#   target = \"\""))  // placeholder attributes should retain descriptions
-	is.True(strings.Contains(source, "#   # Request timeout\n#   timeout = \"0s\"")) // placeholder durations should use readable strings
+	is.True(strings.Contains(source, "# Enable routing\nenabled = false"))            // optional non-pointer zero values should remain active
+	is.True(strings.Contains(source, "# HTTP route\n# route \"example\" {"))          // empty repeated blocks should produce one commented example
+	is.True(strings.Contains(source, "#   # Route destination\n#   target = \"\""))   // placeholder attributes should retain descriptions
+	is.True(strings.Contains(source, "#   # Request timeout\n#   timeout = \"0s\""))  // placeholder durations should use readable strings
+	is.True(strings.Contains(source, "#   target = \"\"\n# \n#   # Request timeout")) // placeholder fields should retain a blank commented separator
 }
 
 func TestAppendTemplateRoundTrip(t *testing.T) {

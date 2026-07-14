@@ -278,6 +278,7 @@ func appendDescription(dst *hclwrite.Body, description string) {
 	if description == "" {
 		return
 	}
+	appendDescriptionSpacing(dst)
 	var source strings.Builder
 	for _, line := range strings.Split(description, "\n") {
 		source.WriteString("# ")
@@ -285,6 +286,13 @@ func appendDescription(dst *hclwrite.Body, description string) {
 		source.WriteByte('\n')
 	}
 	dst.AppendUnstructuredTokens(hclwrite.Tokens{commentToken(source.String())})
+}
+
+func appendDescriptionSpacing(dst *hclwrite.Body) {
+	source := dst.BuildTokens(nil).Bytes()
+	if len(source) != 0 && !bytes.HasSuffix(source, []byte("\n\n")) {
+		dst.AppendNewline()
+	}
 }
 
 func appendCommentedAttribute(dst *hclwrite.Body, name string, value cty.Value) {

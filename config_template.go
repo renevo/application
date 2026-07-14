@@ -1,6 +1,7 @@
 package application
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"sort"
@@ -131,6 +132,7 @@ func appendTemplateDescription(body *hclwrite.Body, description string) {
 	if description == "" {
 		return
 	}
+	appendDescriptionSpacing(body)
 	var source strings.Builder
 	for _, line := range strings.Split(description, "\n") {
 		source.WriteString("# ")
@@ -140,4 +142,11 @@ func appendTemplateDescription(body *hclwrite.Body, description string) {
 	body.AppendUnstructuredTokens(hclwrite.Tokens{
 		&hclwrite.Token{Type: hclsyntax.TokenComment, Bytes: []byte(source.String())},
 	})
+}
+
+func appendDescriptionSpacing(body *hclwrite.Body) {
+	source := body.BuildTokens(nil).Bytes()
+	if len(source) != 0 && !bytes.HasSuffix(source, []byte("\n\n")) {
+		body.AppendNewline()
+	}
 }
