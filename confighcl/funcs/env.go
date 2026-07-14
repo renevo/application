@@ -10,7 +10,8 @@ import (
 
 // MakeEnvFunc returns an HCL function that reads an environment variable by
 // name and accepts an optional fallback string. The fallback is returned when
-// the variable is unset or contains an empty value.
+// the variable is unset or contains an empty value. If no fallback is provided,
+// an unset or empty variable returns an empty string.
 func MakeEnvFunc() function.Function {
 	return function.New(&function.Spec{
 		Params: []function.Parameter{
@@ -25,7 +26,7 @@ func MakeEnvFunc() function.Function {
 		},
 		Type: func(args []cty.Value) (cty.Type, error) {
 			if len(args) > 2 {
-				return cty.NilType, fmt.Errorf("env accepts at most two arguments")
+				return cty.NilType, fmt.Errorf("env expects env(name) or env(name, default), got %d arguments", len(args))
 			}
 
 			return cty.String, nil

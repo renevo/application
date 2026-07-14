@@ -1,6 +1,7 @@
 package funcs
 
 import (
+	"os"
 	"testing"
 
 	"github.com/matryer/is"
@@ -9,7 +10,10 @@ import (
 
 func TestEnv(t *testing.T) {
 	t.Setenv("APPLICATION_ENV_TEST_SET", "from-env")
-	t.Setenv("APPLICATION_ENV_TEST_UNSET", "")
+	t.Setenv("APPLICATION_ENV_TEST_UNSET", "restore-after-test")
+	if err := os.Unsetenv("APPLICATION_ENV_TEST_UNSET"); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name string
@@ -55,5 +59,8 @@ func TestEnvRejectsTooManyArguments(t *testing.T) {
 		cty.StringVal("fallback"),
 		cty.StringVal("extra"),
 	})
-	is.True(err != nil)
+	if err == nil {
+		t.Fatal("expected an arity error")
+	}
+	is.Equal(err.Error(), "env expects env(name) or env(name, default), got 3 arguments")
 }
