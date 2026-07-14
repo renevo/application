@@ -35,6 +35,21 @@ func WithConfigFile(filename string) Option {
 	}
 }
 
+// WithEnvPrefix namespaces automatic environment setting names. Prefixes are
+// uppercased and surrounding underscores are removed, so "myapp" and
+// "MYAPP_" both map Http.Address to MYAPP_HTTP_ADDRESS. An empty prefix keeps
+// names unprefixed. Nonempty prefixes must be portable ASCII identifiers.
+func WithEnvPrefix(prefix string) Option {
+	return func(a *Application) error {
+		normalized, err := normalizeEnvironmentPrefix(prefix)
+		if err != nil {
+			return err
+		}
+		a.envPrefix = normalized
+		return nil
+	}
+}
+
 // WithLogger replaces the default logger. New derives an application-scoped
 // logger from it after all options have been applied. A nil logger is rejected.
 func WithLogger(logger *slog.Logger) Option {
@@ -79,8 +94,8 @@ func WithInstall() RunOption {
 
 // WithSignals enables process signal handling for a Run call. With no explicit
 // signals, it handles SIGTERM, SIGABRT, SIGQUIT, SIGINT, SIGHUP, and signal 21.
-// Nil signals are rejected. SIGHUP always reloads settings; all other signals
-// request graceful shutdown.
+// Nil signals are rejected. SIGHUP always reloads scalar configuration; all
+// other signals request graceful shutdown.
 func WithSignals(signals ...os.Signal) RunOption {
 	return func(options *runOptions) error {
 		if len(signals) == 0 {

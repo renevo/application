@@ -159,6 +159,53 @@ func TestApplicationConfiguration(t *testing.T) {
 			},
 		},
 		{
+			name: "environment overrides file",
+			run: func(t *testing.T, is *is.I) {
+				t.Setenv("MYAPP_HTTP_READ_TIMEOUT", "25s")
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, `http { read_timeout = "15s" }`)
+				module := new(settingsHCLModule)
+				application, err := New(
+					"test",
+					"1.0.0",
+					WithConfigFile(filename),
+					WithEnvPrefix("myapp_"),
+					WithModule("http", module),
+				)
+				is.NoErr(err)                                        // application construction should normalize the environment prefix
+				is.NoErr(application.Validate(context.Background())) // validation should compose file and environment sources
+				is.Equal(module.readTimeout, 25*time.Second)         // environment should override the file value through the duration codec
+			},
+		},
+		{
+			name: "environment-only reload",
+			run: func(t *testing.T, is *is.I) {
+				t.Setenv("HTTP_READ_TIMEOUT", "15s")
+				started := make(chan struct{})
+				module := &settingsHCLModule{readTimeout: 5 * time.Second, started: started}
+				application, err := New("test", "1.0.0", WithModule("http", module))
+				is.NoErr(err) // application construction should accept environment-only configuration
+				runDone := make(chan error, 1)
+				go func() { runDone <- application.Run(context.Background()) }()
+				<-started
+				is.Equal(module.readTimeout, 15*time.Second) // initial preparation should load the environment value
+
+				is.NoErr(os.Setenv("HTTP_READ_TIMEOUT", "invalid"))
+				is.True(application.Reload(context.Background()) != nil) // invalid environment text should fail reload
+				is.Equal(module.readTimeout, 15*time.Second)             // failed reload should preserve the committed setting
+
+				is.NoErr(os.Setenv("HTTP_READ_TIMEOUT", "30s"))
+				is.NoErr(application.Reload(context.Background())) // environment-only reload should not require a configuration file
+				is.Equal(module.readTimeout, 30*time.Second)       // valid environment text should commit through the duration codec
+
+				is.NoErr(os.Unsetenv("HTTP_READ_TIMEOUT"))
+				is.NoErr(application.Reload(context.Background())) // removing the variable should still produce a valid reload
+				is.Equal(module.readTimeout, 5*time.Second)        // omitted environment values should restore the registered default
+				is.NoErr(application.Shutdown(nil))
+				is.NoErr(<-runDone)
+			},
+		},
+		{
 			name: "settings reload",
 			run: func(t *testing.T, is *is.I) {
 				filename := filepath.Join(t.TempDir(), "application.hcl")
@@ -180,6 +227,42 @@ func TestApplicationConfiguration(t *testing.T) {
 				is.Equal(module.readTimeout, 30*time.Second)       // successful reload should replace the setting value
 				is.NoErr(application.Shutdown(nil))                // running application should accept normal shutdown
 				is.NoErr(<-runDone)                                // normal shutdown after reload should return no error
+			},
+		},
+		{
+			name: "structured binding remains startup only",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, `
+http { read_timeout = "15s" }
+route "health" { target = "/healthz" }
+`)
+				started := make(chan struct{})
+				settingsModule := &settingsHCLModule{started: started}
+				routerModule := new(customHCLModule)
+				application, err := New(
+					"test",
+					"1.0.0",
+					WithConfigFile(filename),
+					WithModule("http", settingsModule),
+					WithModule("router", routerModule),
+				)
+				is.NoErr(err) // application construction should accept scalar and structured configuration
+				runDone := make(chan error, 1)
+				go func() { runDone <- application.Run(context.Background()) }()
+				<-started
+				is.Equal(settingsModule.readTimeout, 15*time.Second)
+				is.Equal(routerModule.config.Routes[0].Target, "/healthz")
+
+				writeTestConfig(is, filename, `
+http { read_timeout = "30s" }
+route "health" { target = "/changed" }
+`)
+				is.NoErr(application.Reload(context.Background()))         // valid reload should re-evaluate every scalar source
+				is.Equal(settingsModule.readTimeout, 30*time.Second)       // scalar settings should receive the reloaded file value
+				is.Equal(routerModule.config.Routes[0].Target, "/healthz") // structured targets should retain their startup value
+				is.NoErr(application.Shutdown(nil))
+				is.NoErr(<-runDone)
 			},
 		},
 		{

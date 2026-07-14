@@ -20,8 +20,6 @@ var (
 	ErrInvalidState = errors.New("invalid application state")
 	// ErrModulesFrozen indicates that registration was attempted after preparation began.
 	ErrModulesFrozen = errors.New("module registration is frozen")
-	// ErrNoConfigFile indicates that reload was requested without a configured file.
-	ErrNoConfigFile = errors.New("application has no configuration file")
 	// ErrNotRunning indicates that shutdown was requested while Run was inactive.
 	ErrNotRunning = errors.New("application is not running")
 )
