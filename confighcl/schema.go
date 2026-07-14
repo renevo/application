@@ -108,11 +108,12 @@ func ImpliedBodySchema(val any) (schema *hcl.BodySchema, partial bool) {
 }
 
 type fieldTags struct {
-	Attributes map[string]int
-	Blocks     map[string]int
-	Labels     []labelField
-	Remain     *int
-	Optional   map[string]bool
+	Attributes   map[string]int
+	Blocks       map[string]int
+	Descriptions map[int]string
+	Labels       []labelField
+	Remain       *int
+	Optional     map[string]bool
 }
 
 type labelField struct {
@@ -122,9 +123,10 @@ type labelField struct {
 
 func getFieldTags(ty reflect.Type) *fieldTags {
 	ret := &fieldTags{
-		Attributes: map[string]int{},
-		Blocks:     map[string]int{},
-		Optional:   map[string]bool{},
+		Attributes:   map[string]int{},
+		Blocks:       map[string]int{},
+		Descriptions: map[int]string{},
+		Optional:     map[string]bool{},
 	}
 
 	ct := ty.NumField()
@@ -138,6 +140,9 @@ func getFieldTags(ty reflect.Type) *fieldTags {
 		}
 		if tag == "" {
 			continue
+		}
+		if description := field.Tag.Get("description"); description != "" {
+			ret.Descriptions[i] = description
 		}
 
 		before, after, ok := strings.Cut(tag, ",")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log/slog"
 	"os"
@@ -174,6 +175,53 @@ func (a *Application) Validate(ctx context.Context) error {
 	defer a.operationMu.Unlock()
 	_, err := a.prepare(ctx)
 	return err
+}
+
+// WriteConfigTemplate initializes modules and writes a native HCL starter
+// configuration containing their registered defaults. It does not read the
+// configured file or environment sources. The operation is terminal for the
+// Application and leaves it stopped on success or failed on error.
+//
+// A nil context is treated as context.Background. Concurrent lifecycle work
+// returns ErrApplicationBusy.
+func (a *Application) WriteConfigTemplate(ctx context.Context, writer io.Writer) error {
+	if !a.operationMu.TryLock() {
+		return ErrApplicationBusy
+	}
+	defer a.operationMu.Unlock()
+
+	if isNil(writer) {
+		return errors.New("configuration template writer must not be nil")
+	}
+	if a.State() != StateNew {
+		return fmt.Errorf("%w: cannot write configuration template from %s", ErrInvalidState, a.State())
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	modules := a.modules.freeze()
+	if err := a.initializeModules(ctx, modules); err != nil {
+		return err
+	}
+	a.setState(StateConfiguring)
+
+	source, err := a.configTemplate()
+	if err != nil {
+		a.setState(StateFailed)
+		return err
+	}
+	written, err := writer.Write(source)
+	if err == nil && written != len(source) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		a.setState(StateFailed)
+		return fmt.Errorf("write configuration template: %w", err)
+	}
+
+	a.setState(StateStopped)
+	return nil
 }
 
 // Install prepares the application, then invokes each Installer in registration
@@ -377,16 +425,8 @@ func (a *Application) prepare(parent context.Context) ([]*registeredModule, erro
 	}
 
 	modules := a.modules.freeze()
-	a.setState(StateInitializing)
-	for _, module := range modules {
-		module.state = moduleStateInitializing
-		if initializer, ok := module.implementation.(Initializer); ok {
-			if err := initializer.Initialize(newContext(parent, a, module.name)); err != nil {
-				a.setState(StateFailed)
-				return nil, phaseError(module.name, "initialize", err)
-			}
-		}
-		module.state = moduleStateInitialized
+	if err := a.initializeModules(parent, modules); err != nil {
+		return nil, err
 	}
 
 	a.setState(StateConfiguring)
@@ -396,6 +436,21 @@ func (a *Application) prepare(parent context.Context) ([]*registeredModule, erro
 	}
 	a.setState(StateReady)
 	return modules, nil
+}
+
+func (a *Application) initializeModules(parent context.Context, modules []*registeredModule) error {
+	a.setState(StateInitializing)
+	for _, module := range modules {
+		module.state = moduleStateInitializing
+		if initializer, ok := module.implementation.(Initializer); ok {
+			if err := initializer.Initialize(newContext(parent, a, module.name)); err != nil {
+				a.setState(StateFailed)
+				return phaseError(module.name, "initialize", err)
+			}
+		}
+		module.state = moduleStateInitialized
+	}
+	return nil
 }
 
 func (a *Application) install(parent context.Context, modules []*registeredModule) error {

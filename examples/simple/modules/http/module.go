@@ -8,14 +8,14 @@ import (
 )
 
 type route struct {
-	Name    string   `config:"name,label"`
-	Target  string   `config:"target"`
-	Methods []string `config:"methods,optional"`
+	Name    string   `config:"name,label" description:"Route name"`
+	Target  string   `config:"target" description:"Route destination"`
+	Methods []string `config:"methods,optional" description:"Allowed HTTP methods"`
 }
 
 type config struct {
-	Prefix string  `config:"prefix,optional"`
-	Routes []route `config:"route,block"`
+	Prefix string  `config:"prefix,optional" description:"Path prefix for all routes"`
+	Routes []route `config:"route,block" description:"HTTP route"`
 }
 
 // Module demonstrates a component that combines scalar application settings
