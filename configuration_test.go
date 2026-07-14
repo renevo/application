@@ -3,79 +3,298 @@ package application
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/matryer/is"
+
 	"github.com/renevo/application/confighcl"
 )
 
 func TestHCL(t *testing.T) {
-	is := is.New(t)
-
-	if err := os.Setenv("TEST", "set-from-env"); err != nil {
-		t.Fatalf("set env failed: %v", err)
-	}
-	defer func() {
-		if err := os.Unsetenv("TEST"); err != nil {
-			t.Fatalf("unset env failed: %v", err)
-		}
-	}()
+	t.Setenv("TEST", "set-from-env")
 
 	cfg := &Configuration{}
 
 	tests := []struct {
-		Name  string
-		Input string
-		Value any
+		name   string
+		input  string
+		target any
+		want   any
 	}{
 		{
-			Name:  "basic",
-			Input: `hello = "world"`,
-			Value: &struct {
+			name:  "basic",
+			input: `hello = "world"`,
+			target: &struct {
 				Hello string `config:"hello,optional"`
 			}{},
+			want: &struct {
+				Hello string `config:"hello,optional"`
+			}{Hello: "world"},
 		},
 		{
-			Name:  "Duration",
-			Input: `timeout = "5s"`,
-			Value: &struct {
+			name:  "duration",
+			input: `timeout = "5s"`,
+			target: &struct {
 				Timeout time.Duration `config:"timeout,optional"`
 			}{},
+			want: &struct {
+				Timeout time.Duration `config:"timeout,optional"`
+			}{Timeout: 5 * time.Second},
 		},
 		{
-			Name:  "Stdlib",
-			Input: `hello = lower("HELLO")`,
-			Value: &struct {
+			name:  "stdlib",
+			input: `hello = lower("HELLO")`,
+			target: &struct {
 				Hello string `config:"hello,optional"`
 			}{},
+			want: &struct {
+				Hello string `config:"hello,optional"`
+			}{Hello: "hello"},
 		},
 		{
-			Name:  "env",
-			Input: `hello = env("USER", "username")`,
-			Value: &struct {
+			name:  "env",
+			input: `hello = env("TEST", "username")`,
+			target: &struct {
 				Hello string `config:"hello,optional"`
 			}{},
+			want: &struct {
+				Hello string `config:"hello,optional"`
+			}{Hello: "set-from-env"},
 		},
 	}
 
 	for _, test := range tests {
-		t.Run(test.Name, func(t *testing.T) {
-			file, diags := hclsyntax.ParseConfig([]byte(test.Input), "test.hcl", hcl.Pos{Line: 1, Column: 1})
-			is.True(!diags.HasErrors()) // parsing the fixture should succeed
-			if diags.HasErrors() {
-				is.Fail() // stop here so we do not continue with invalid input
-			}
+		t.Run(test.name, func(t *testing.T) {
+			is := is.New(t)
+			file, diags := hclsyntax.ParseConfig([]byte(test.input), "test.hcl", hcl.Pos{Line: 1, Column: 1})
+			is.True(!diags.HasErrors()) // fixture should parse as valid native HCL
 
-			diags = confighcl.DecodeBody(file.Body, cfg.EvalContext(context.Background()), test.Value)
-			is.True(!diags.HasErrors()) // decoding the fixture should succeed
-			if diags.HasErrors() {
-				is.Fail() // stop here so we do not continue with invalid decoded state
-			}
+			diags = confighcl.DecodeBody(file.Body, cfg.EvalContext(context.Background()), test.target)
+			is.True(!diags.HasErrors())      // fixture should decode into its target type
+			is.Equal(test.target, test.want) // decoded value should match the case expectation
+		})
+	}
+}
 
-			t.Logf("%+v", test.Value)
+type settingsHCLModule struct {
+	readTimeout time.Duration
+	started     chan struct{}
+}
+
+func (m *settingsHCLModule) Initialize(ctx *Context) error {
+	http := ctx.Settings().Subset("http")
+	http.Setting("read_timeout", &m.readTimeout, "HTTP read timeout")
+	return nil
+}
+
+func (m *settingsHCLModule) Start(*Context) error {
+	if m.started != nil {
+		close(m.started)
+	}
+	return nil
+}
+func (*settingsHCLModule) Stop(*Context) error { return nil }
+
+type routeConfig struct {
+	Prefix string `config:"prefix,optional"`
+	Routes []struct {
+		Name    string   `config:"name,label"`
+		Target  string   `config:"target"`
+		Methods []string `config:"methods,optional"`
+	} `config:"route,block"`
+}
+
+type customHCLModule struct {
+	config routeConfig
+}
+
+func (m *customHCLModule) Initialize(ctx *Context) error { return ctx.BindConfig(&m.config) }
+func (*customHCLModule) Start(*Context) error            { return nil }
+func (*customHCLModule) Stop(*Context) error             { return nil }
+
+type bindingModule struct {
+	target any
+}
+
+func (m *bindingModule) Initialize(ctx *Context) error { return ctx.BindConfig(m.target) }
+func (*bindingModule) Start(*Context) error            { return nil }
+func (*bindingModule) Stop(*Context) error             { return nil }
+
+type rollbackConfig struct {
+	Routes []struct {
+		Name   string `config:"name,label"`
+		Target string `config:"target"`
+	} `config:"route,block"`
+	Backend *struct {
+		Name     string `config:"name"`
+		Endpoint string `config:"endpoint"`
+	} `config:"backend,block"`
+}
+
+func writeTestConfig(is *is.I, filename, source string) {
+	is.Helper()
+	is.NoErr(os.WriteFile(filename, []byte(source), 0o600)) // configuration fixture should be writable
+}
+
+func TestApplicationConfiguration(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*testing.T, *is.I)
+	}{
+		{
+			name: "settings source",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, `http { read_timeout = "15s" }`)
+				module := new(settingsHCLModule)
+				application, err := New("test", "1.0.0", WithConfigFile(filename), WithModule("http", module))
+				is.NoErr(err)                                        // application construction should accept the configuration file
+				is.NoErr(application.Validate(context.Background())) // validation should load registered settings
+				is.Equal(module.readTimeout, 15*time.Second)         // HCL value should pass through the duration codec
+				is.True(application.Settings().Loaded())             // successful validation should commit the settings set
+			},
+		},
+		{
+			name: "settings reload",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, `http { read_timeout = "15s" }`)
+				started := make(chan struct{})
+				module := &settingsHCLModule{started: started}
+				application, err := New("test", "1.0.0", WithConfigFile(filename), WithModule("http", module))
+				is.NoErr(err) // application construction should accept reloadable settings
+				runDone := make(chan error, 1)
+				go func() { runDone <- application.Run(context.Background()) }()
+				<-started
+
+				writeTestConfig(is, filename, `http { read_timeout = "invalid" }`)
+				is.True(application.Reload(context.Background()) != nil) // invalid reload should report a decoding error
+				is.Equal(module.readTimeout, 15*time.Second)             // failed reload should preserve the committed value
+
+				writeTestConfig(is, filename, `http { read_timeout = "30s" }`)
+				is.NoErr(application.Reload(context.Background())) // valid reload should commit atomically
+				is.Equal(module.readTimeout, 30*time.Second)       // successful reload should replace the setting value
+				is.NoErr(application.Shutdown(nil))                // running application should accept normal shutdown
+				is.NoErr(<-runDone)                                // normal shutdown after reload should return no error
+			},
+		},
+		{
+			name: "custom HCL binding",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				source := `
+route "health" {
+  target = "/healthz"
+  methods = ["GET", "HEAD"]
+}
+route "metrics" {
+  target = "/metrics"
+}
+`
+				writeTestConfig(is, filename, source)
+				module := &customHCLModule{config: routeConfig{Prefix: "/api"}}
+				application, err := New("test", "1.0.0", WithConfigFile(filename), WithModule("router", module))
+				is.NoErr(err)                                                      // application construction should accept a structured binding
+				is.NoErr(application.Validate(context.Background()))               // validation should decode all route blocks
+				is.Equal(len(module.config.Routes), 2)                             // repeated route blocks should populate the route slice
+				is.Equal(module.config.Prefix, "/api")                             // omitted optional value should preserve the target default
+				is.Equal(module.config.Routes[0].Name, "health")                   // block label should populate the route name
+				is.Equal(module.config.Routes[0].Target, "/healthz")               // route target should decode from its attribute
+				is.Equal(module.config.Routes[0].Methods, []string{"GET", "HEAD"}) // optional method list should decode completely
+			},
+		},
+		{
+			name: "map binding before struct binding",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, `message = "hello"`)
+				mapTarget := map[string]string{}
+				structTarget := struct {
+					Optional string `config:"optional,optional"`
+				}{}
+				application, err := New(
+					"test",
+					"1.0.0",
+					WithConfigFile(filename),
+					WithModule("map", &bindingModule{target: &mapTarget}),
+					WithModule("struct", &bindingModule{target: &structTarget}),
+				)
+				is.NoErr(err)                                              // application construction should accept multiple structured bindings
+				is.NoErr(application.Validate(context.Background()))       // a consumed map body should leave an empty body for later bindings
+				is.Equal(mapTarget, map[string]string{"message": "hello"}) // map binding should receive all remaining attributes
+				is.Equal(structTarget.Optional, "")                        // later struct binding should decode from the empty leftover body
+			},
+		},
+		{
+			name: "failed structured binding rollback",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, `
+route "changed" {}
+backend {
+  name = "changed"
+}
+`)
+				target := rollbackConfig{
+					Routes: []struct {
+						Name   string `config:"name,label"`
+						Target string `config:"target"`
+					}{{Name: "original", Target: "/original"}},
+					Backend: &struct {
+						Name     string `config:"name"`
+						Endpoint string `config:"endpoint"`
+					}{Name: "original", Endpoint: "/original"},
+				}
+				application, err := New(
+					"test",
+					"1.0.0",
+					WithConfigFile(filename),
+					WithModule("rollback", &bindingModule{target: &target}),
+				)
+				is.NoErr(err)                                              // application construction should accept a pre-populated structured binding
+				is.True(application.Validate(context.Background()) != nil) // missing required fields should fail structured decoding
+				is.Equal(target.Routes[0].Name, "original")                // failed decoding should not mutate an existing slice element
+				is.Equal(target.Routes[0].Target, "/original")             // failed decoding should preserve existing slice element fields
+				is.Equal(target.Backend.Name, "original")                  // failed decoding should not mutate an existing pointer target
+				is.Equal(target.Backend.Endpoint, "/original")             // failed decoding should preserve existing pointer target fields
+			},
+		},
+		{
+			name: "overlapping slice bounds",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, "")
+				backing := []string{"first", "second"}
+				target := struct {
+					Short []string `config:"short,optional"`
+					Long  []string `config:"long,optional"`
+				}{
+					Short: backing[:1],
+					Long:  backing[:2],
+				}
+				application, err := New(
+					"test",
+					"1.0.0",
+					WithConfigFile(filename),
+					WithModule("slices", &bindingModule{target: &target}),
+				)
+				is.NoErr(err)                                        // application construction should accept overlapping slice views
+				is.NoErr(application.Validate(context.Background())) // empty configuration should preserve optional binding defaults
+				is.Equal(target.Short, []string{"first"})            // shorter slice view should retain its original bounds
+				is.Equal(target.Long, []string{"first", "second"})   // longer slice view should not reuse the shorter clone
+				is.Equal(cap(target.Short), 2)                       // shorter slice view should retain its original capacity
+				is.Equal(cap(target.Long), 2)                        // longer slice view should retain its original capacity
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.run(t, is.New(t))
 		})
 	}
 }

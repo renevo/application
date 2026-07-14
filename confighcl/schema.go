@@ -9,17 +9,16 @@ import (
 	"github.com/hashicorp/hcl/v2"
 )
 
-// ImpliedBodySchema produces a hcl.BodySchema derived from the type of the
-// given value, which must be a struct value or a pointer to one. If an
-// inappropriate value is passed, this function will panic.
+// ImpliedBodySchema produces an hcl.BodySchema derived from the type of val,
+// which must be a struct value or a non-nil pointer to one.
 //
 // The second return argument indicates whether the given struct includes
 // a "remain" field, and thus the returned schema is non-exhaustive.
 //
-// This uses the tags on the fields of the struct to discover how each
-// field's value should be expressed within configuration. If an invalid
-// mapping is attempted, this function will panic.
-func ImpliedBodySchema(val interface{}) (schema *hcl.BodySchema, partial bool) {
+// Field tags determine the attributes, blocks, and block labels in the schema.
+// Invalid values, malformed tags, duplicate remain fields, and block fields
+// that do not resolve to structs are caller errors and cause a panic.
+func ImpliedBodySchema(val any) (schema *hcl.BodySchema, partial bool) {
 	ty := reflect.TypeOf(val)
 
 	if ty.Kind() == reflect.Pointer {
@@ -129,7 +128,7 @@ func getFieldTags(ty reflect.Type) *fieldTags {
 	}
 
 	ct := ty.NumField()
-	for i := 0; i < ct; i++ {
+	for i := range ct {
 		field := ty.Field(i)
 		tag := field.Tag.Get("config")
 
@@ -141,11 +140,11 @@ func getFieldTags(ty reflect.Type) *fieldTags {
 			continue
 		}
 
-		comma := strings.Index(tag, ",")
+		before, after, ok := strings.Cut(tag, ",")
 		var name, kind string
-		if comma != -1 {
-			name = tag[:comma]
-			kind = tag[comma+1:]
+		if ok {
+			name = before
+			kind = after
 		} else {
 			name = tag
 			kind = "attr"

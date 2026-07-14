@@ -6,7 +6,9 @@ import (
 	"github.com/zclconf/go-cty/cty/function/stdlib"
 )
 
-// Stdlib are the functions provided by the configuration stdlib.
+// Stdlib returns the functions available to application HCL expressions. The
+// set includes cty's general helpers, environment lookup, and YAML encoding and
+// decoding. Each call returns a new map that callers may modify independently.
 func Stdlib() map[string]function.Function {
 	return map[string]function.Function{
 		"abs":             stdlib.AbsoluteFunc,

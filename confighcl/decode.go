@@ -29,20 +29,31 @@ import (
 // are returned then the given value may have been partially-populated but
 // may still be accessed by a careful caller for static analysis and editor
 // integration use-cases.
-func DecodeBody(body hcl.Body, ctx *hcl.EvalContext, val interface{}) hcl.Diagnostics {
+//
+// A nil target pointer produces an error diagnostic. Other target-shape or
+// schema errors, such as a pointer to a non-struct or non-map value or invalid
+// field tags, indicate caller bugs and cause a panic.
+func DecodeBody(body hcl.Body, ctx *hcl.EvalContext, val any) hcl.Diagnostics {
 	rv := reflect.ValueOf(val)
-	if rv.Kind() != reflect.Pointer {
-		panic(fmt.Sprintf("target value must be a pointer, not %s", rv.Type().String()))
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return invalidTargetDiagnostic(rv)
 	}
 
 	return decodeBodyToValue(body, ctx, rv.Elem())
 }
 
-// DecodeLeftoverBody is...
-func DecodeLeftoverBody(body hcl.Body, ctx *hcl.EvalContext, val interface{}) (hcl.Body, hcl.Diagnostics) {
+// DecodeLeftoverBody decodes the portion of body described by val and returns
+// the unconsumed body. Struct targets use their implied schema for partial
+// matching; map targets consume the remaining attributes and return an empty
+// body.
+//
+// Configuration problems are returned as diagnostics and may leave val
+// partially populated. A nil target pointer produces a diagnostic, while other
+// invalid target shapes or field schemas cause a panic.
+func DecodeLeftoverBody(body hcl.Body, ctx *hcl.EvalContext, val any) (hcl.Body, hcl.Diagnostics) {
 	rv := reflect.ValueOf(val)
-	if rv.Kind() != reflect.Pointer {
-		panic(fmt.Sprintf("target value must be a pointer, not %s", rv.Type().String()))
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return body, invalidTargetDiagnostic(rv)
 	}
 
 	elem := rv.Elem()
@@ -53,10 +64,22 @@ func DecodeLeftoverBody(body hcl.Body, ctx *hcl.EvalContext, val interface{}) (h
 		schema, _ := ImpliedBodySchema(elem.Interface())
 		return decodeBodyToStruct(body, ctx, elem, schema, true)
 	case reflect.Map:
-		return nil, decodeBodyToMap(body, ctx, elem)
+		return hcl.EmptyBody(), decodeBodyToMap(body, ctx, elem)
 	default:
 		panic(fmt.Sprintf("target value must be pointer to struct or map, not %s", et.String()))
 	}
+}
+
+func invalidTargetDiagnostic(value reflect.Value) hcl.Diagnostics {
+	targetType := "<nil>"
+	if value.IsValid() {
+		targetType = value.Type().String()
+	}
+	return hcl.Diagnostics{&hcl.Diagnostic{
+		Severity: hcl.DiagError,
+		Summary:  "Invalid decode target",
+		Detail:   fmt.Sprintf("Target must be a non-nil pointer to a struct or map, not %s.", targetType),
+	}}
 }
 
 func decodeBodyToValue(body hcl.Body, ctx *hcl.EvalContext, val reflect.Value) hcl.Diagnostics {
@@ -133,7 +156,7 @@ func decodeBodyToStruct(body hcl.Body, ctx *hcl.EvalContext, val reflect.Value, 
 
 		default:
 			// special handling for time.Duration (HACK LIKE ITS GOLD)
-			if strings.EqualFold(field.Type.Name(), "Duration") {
+			if field.Type == durationType {
 				stringVal := ""
 				diags = append(diags, DecodeExpression(attr.Expr, ctx, &stringVal)...)
 
@@ -329,7 +352,10 @@ func decodeBlockToValue(block *hcl.Block, ctx *hcl.EvalContext, v reflect.Value)
 // are returned then the given value may have been partially-populated but
 // may still be accessed by a careful caller for static analysis and editor
 // integration use-cases.
-func DecodeExpression(expr hcl.Expression, ctx *hcl.EvalContext, val interface{}) hcl.Diagnostics {
+//
+// Evaluation and conversion failures are returned as diagnostics. A target
+// that gocty cannot describe is a caller error and causes a panic.
+func DecodeExpression(expr hcl.Expression, ctx *hcl.EvalContext, val any) hcl.Diagnostics {
 	srcVal, diags := expr.Value(ctx)
 
 	convTy, err := gocty.ImpliedType(val)

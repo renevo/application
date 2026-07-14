@@ -2,15 +2,15 @@ package confighcl
 
 import (
 	"reflect"
+	"time"
 
 	"github.com/hashicorp/hcl/v2"
 )
 
-var victimExpr hcl.Expression
-var victimBody hcl.Body
+var durationType = reflect.TypeFor[time.Duration]()
 
-var exprType = reflect.TypeOf(&victimExpr).Elem()
-var bodyType = reflect.TypeOf(&victimBody).Elem()
-var blockType = reflect.TypeOf((*hcl.Block)(nil))
-var attrType = reflect.TypeOf((*hcl.Attribute)(nil))
-var attrsType = reflect.TypeOf(hcl.Attributes(nil))
+var exprType = reflect.TypeFor[hcl.Expression]()
+var bodyType = reflect.TypeFor[hcl.Body]()
+var blockType = reflect.TypeFor[*hcl.Block]()
+var attrType = reflect.TypeFor[*hcl.Attribute]()
+var attrsType = reflect.TypeFor[hcl.Attributes]()

@@ -9,10 +9,9 @@ import (
 	"github.com/zclconf/go-cty/cty/gocty"
 )
 
-// EncodeIntoBody replaces the contents of the given hclwrite Body with
-// attributes and blocks derived from the given value, which must be a
-// struct value or a pointer to a struct value with the struct tags defined
-// in this package.
+// EncodeIntoBody replaces dst with attributes and blocks derived from val,
+// which must be a struct or non-nil pointer to a struct using this package's
+// field tags. Existing destination content is discarded.
 //
 // This function can work only with fully-decoded data. It will ignore any
 // fields tagged as "remain", any fields that decode attributes into either
@@ -23,17 +22,16 @@ import (
 // Any fields tagged as "label" are ignored by this function. Use EncodeAsBlock
 // to produce a whole hclwrite.Block including block labels.
 //
-// As long as a suitable value is given to encode and the destination body
-// is non-nil, this function will always complete. It will panic in case of
-// any errors in the calling program, such as passing an inappropriate type
-// or a nil body.
+// EncodeIntoBody panics for caller or schema errors, including an inappropriate
+// value, a nil destination, or a field that cannot be represented as a cty
+// value.
 //
 // The layout of the resulting HCL source is derived from the ordering of
 // the struct fields, with blank lines around nested blocks of different types.
 // Fields representing attributes should usually precede those representing
-// blocks so that the attributes can group togather in the result. For more
+// blocks so that the attributes can group together in the result. For more
 // control, use the hclwrite API directly.
-func EncodeIntoBody(val interface{}, dst *hclwrite.Body) {
+func EncodeIntoBody(val any, dst *hclwrite.Body) {
 	rv := reflect.ValueOf(val)
 	ty := rv.Type()
 	if ty.Kind() == reflect.Pointer {
@@ -48,16 +46,15 @@ func EncodeIntoBody(val interface{}, dst *hclwrite.Body) {
 	populateBody(rv, ty, tags, dst)
 }
 
-// EncodeAsBlock creates a new hclwrite.Block populated with the data from
-// the given value, which must be a struct or pointer to struct with the
-// struct tags defined in this package.
+// EncodeAsBlock creates a new blockType block populated from val, which must be
+// a struct or non-nil pointer to a struct using this package's field tags.
 //
 // If the given struct type has fields tagged with "label" tags then they
 // will be used in order to annotate the created block with labels.
 //
-// This function has the same constraints as EncodeIntoBody and will panic
-// if they are violated.
-func EncodeAsBlock(val interface{}, blockType string) *hclwrite.Block {
+// EncodeAsBlock has the same field support and panic contract as
+// EncodeIntoBody.
+func EncodeAsBlock(val any, blockType string) *hclwrite.Block {
 	rv := reflect.ValueOf(val)
 	ty := rv.Type()
 	if ty.Kind() == reflect.Pointer {
@@ -157,7 +154,7 @@ func populateBody(rv reflect.Value, ty reflect.Type, tags *fieldTags, dst *hclwr
 
 			if isSeq {
 				l := fieldVal.Len()
-				for i := 0; i < l; i++ {
+				for i := range l {
 					elemVal := fieldVal.Index(i)
 					if !elemVal.IsValid() {
 						continue // ignore (elem value is nil pointer)

@@ -3,12 +3,12 @@ package application
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
+	"iter"
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
+	"reflect"
 	"sync"
 	"syscall"
 	"time"
@@ -16,218 +16,484 @@ import (
 	"github.com/renevo/config"
 )
 
-// Application defines an instance of an application
+// Application coordinates configuration and the ordered lifecycle of a fixed
+// set of modules. An Application is single-use: Validate may prepare it for a
+// later Run, while Install and Run are terminal workflows.
+//
+// Application methods serialize lifecycle operations. A concurrent operation
+// returns ErrApplicationBusy instead of waiting for the active operation.
 type Application struct {
-	sync.Mutex
+	name     string
+	version  string
+	settings *config.Set
+	logger   *slog.Logger
 
-	Name       string
-	Version    string
-	Controller *Controller
-	Settings   *config.Set
-	Logger     *slog.Logger
+	modules moduleRegistry
 
-	configuration *Configuration
-	configFile    string
-	errorCh       chan error
+	operationMu sync.Mutex
+	stateMu     sync.RWMutex
+	state       State
+	runCancel   context.CancelCauseFunc
+	shutdown    sync.Once
+
+	configuration   *Configuration
+	configBindings  []configBinding
+	configFile      string
+	shutdownTimeout time.Duration
 }
 
-// Run creates an application with the specified name and version, applies the provided options, and begins execution
+type configBinding struct {
+	module string
+	target reflect.Value
+}
+
+type shutdownRequest struct {
+	cause error
+}
+
+func (request *shutdownRequest) Error() string {
+	if request.cause == nil {
+		return context.Canceled.Error()
+	}
+	return request.cause.Error()
+}
+
+func (request *shutdownRequest) Unwrap() error {
+	if request.cause == nil {
+		return context.Canceled
+	}
+	return request.cause
+}
+
+// Run constructs an Application and runs it with a background context. It is a
+// convenience for callers that do not need RunOption values such as
+// WithSignals or WithInstall.
 func Run(name, version string, opts ...Option) error {
-	return New(name, version, opts...).Run(context.Background())
+	application, err := New(name, version, opts...)
+	if err != nil {
+		return err
+	}
+	return application.Run(context.Background())
 }
 
-// New creates a new application and executes the options
-func New(name, version string, opts ...Option) *Application {
+// New constructs an Application and applies opts in order. Empty names and
+// versions default to "application" and "0.0.0". Nil options are ignored.
+//
+// The application starts with a new settings set, slog.Default, and a
+// 30-second shutdown timeout. Option failures are returned with construction
+// context, and the final logger is scoped with the application name.
+func New(name, version string, opts ...Option) (*Application, error) {
+	if name == "" {
+		name = "application"
+	}
+	if version == "" {
+		version = "0.0.0"
+	}
 	app := &Application{
-		Name:       name,
-		Version:    version,
-		Controller: &Controller{},
-		Logger:     slog.Default(),
+		name:            name,
+		version:         version,
+		settings:        config.NewSet(),
+		logger:          slog.Default(),
+		state:           StateNew,
+		shutdownTimeout: 30 * time.Second,
 	}
 
 	for _, opt := range opts {
-		opt(app)
+		if opt != nil {
+			if err := opt(app); err != nil {
+				return nil, fmt.Errorf("configure application: %w", err)
+			}
+		}
 	}
 
 	// add the application name to all logs on this logger
-	app.Logger = app.Logger.With("app", name)
+	app.logger = app.logger.With("app", name)
 
-	return app
+	return app, nil
 }
 
-// Validate will validate the configuration and return any errors
+// Name returns the application name established during construction.
+func (a *Application) Name() string { return a.name }
+
+// Version returns the application version established during construction.
+func (a *Application) Version() string { return a.version }
+
+// Settings returns the application's shared configuration set. Modules should
+// register settings during Initialize, before configuration is loaded.
+func (a *Application) Settings() *config.Set { return a.settings }
+
+// Logger returns the application-scoped logger. Module lifecycle contexts
+// derive a child logger that also includes the module name.
+func (a *Application) Logger() *slog.Logger { return a.logger }
+
+// String returns the application identity in name/version form.
+func (a *Application) String() string { return fmt.Sprintf("%s/%s", a.name, a.version) }
+
+// State returns a concurrency-safe snapshot of the current lifecycle state.
+// The application may transition again immediately after State returns.
+func (a *Application) State() State {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.state
+}
+
+func (a *Application) setState(state State) {
+	a.stateMu.Lock()
+	a.state = state
+	a.stateMu.Unlock()
+}
+
+// Module returns the module registered under name. Names are matched exactly.
+func (a *Application) Module(name string) (Module, bool) { return a.modules.get(name) }
+
+// Modules returns an insertion-ordered snapshot of registered modules. The
+// sequence is unaffected by later lifecycle state changes and may be stopped
+// early by the iterator consumer.
+func (a *Application) Modules() iter.Seq2[string, Module] {
+	modules := a.modules.snapshot()
+	return func(yield func(string, Module) bool) {
+		for _, module := range modules {
+			if !yield(module.name, module.implementation) {
+				return
+			}
+		}
+	}
+}
+
+// Validate initializes all modules and loads the initial configuration without
+// installing or starting modules. A successful call leaves the application in
+// StateReady and may be followed by another Validate or one Run or Install.
+//
+// A nil context is treated as context.Background. Concurrent lifecycle work
+// returns ErrApplicationBusy.
 func (a *Application) Validate(ctx context.Context) error {
-	a.Lock()
-	defer a.Unlock()
-
-	return a.loadConfig(a.initialize(ctx))
+	if !a.operationMu.TryLock() {
+		return ErrApplicationBusy
+	}
+	defer a.operationMu.Unlock()
+	_, err := a.prepare(ctx)
+	return err
 }
 
-// Install will execute all modules that have an application.Initializer implementation, then all modules with that implement the application.Installer
+// Install prepares the application, then invokes each Installer in registration
+// order. It stops at the first error and does not perform rollback or module
+// teardown because Start has not been entered.
+//
+// Install is terminal for this Application, ending in StateStopped on success
+// or StateFailed on failure.
 func (a *Application) Install(ctx context.Context) error {
-	a.Lock()
-	defer a.Unlock()
+	if !a.operationMu.TryLock() {
+		return ErrApplicationBusy
+	}
+	defer a.operationMu.Unlock()
 
-	ctx = a.initialize(ctx)
-	if err := a.loadConfig(ctx); err != nil {
+	modules, err := a.prepare(ctx)
+	if err != nil {
 		return err
 	}
+	a.setState(StateInstalling)
+	err = a.install(ctx, modules)
+	if err != nil {
+		a.setState(StateFailed)
+	} else {
+		a.setState(StateStopped)
+	}
+	return err
+}
 
-	initializeModules := sortModules(a.Controller.modules)
-	for _, im := range initializeModules {
-		if initializer, ok := im.implementation.(Initializer); ok {
-			itx, err := initializer.Initialize(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to initialize module %q: %w", im.name, err)
+// Run prepares and starts the application, waits for cancellation, and tears
+// down started modules. Startup phases run serially in registration order;
+// PreStop, Stop, and PostStop each run serially in reverse order.
+//
+// A module becomes eligible for teardown immediately before its Start method is
+// called, so a module whose Start fails is cleaned up while later modules are
+// not. Teardown continues after hook failures, and startup, cancellation, and
+// teardown errors are combined with errors.Join.
+//
+// Run is single-use and terminal. A nil parent is treated as
+// context.Background. Run options are applied before preparation begins.
+func (a *Application) Run(parent context.Context, runOpts ...RunOption) error {
+	if !a.operationMu.TryLock() {
+		return ErrApplicationBusy
+	}
+	defer a.operationMu.Unlock()
+
+	options := new(runOptions)
+	for _, option := range runOpts {
+		if option != nil {
+			if err := option(options); err != nil {
+				return fmt.Errorf("configure run: %w", err)
 			}
+		}
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
 
-			if itx != nil {
-				ctx = itx
+	modules, err := a.prepare(parent)
+	if err != nil {
+		return err
+	}
+	if a.State() != StateReady {
+		return fmt.Errorf("%w: cannot run from %s", ErrInvalidState, a.State())
+	}
+
+	runParent := parent
+	stopSignals := func() {}
+	var reloadSignals chan os.Signal
+	terminationSignals, reloadOnSIGHUP := partitionSignals(options.signals)
+	if len(options.signals) != 0 {
+		if len(terminationSignals) != 0 {
+			runParent, stopSignals = signal.NotifyContext(parent, terminationSignals...)
+		}
+		if reloadOnSIGHUP {
+			reloadSignals = make(chan os.Signal, 1)
+			signal.Notify(reloadSignals, syscall.SIGHUP)
+		}
+	}
+	defer func() {
+		stopSignals()
+		if reloadSignals != nil {
+			signal.Stop(reloadSignals)
+		}
+	}()
+
+	runContext, cancel := context.WithCancelCause(runParent)
+	a.stateMu.Lock()
+	a.runCancel = cancel
+	a.stateMu.Unlock()
+	defer func() {
+		a.stateMu.Lock()
+		a.runCancel = nil
+		a.stateMu.Unlock()
+	}()
+
+	startupTime := time.Now()
+	a.logger.Info("Starting application")
+	defer func() { a.logger.Info("Stopped application", "duration", time.Since(startupTime)) }()
+
+	if options.install {
+		a.setState(StateInstalling)
+		if err := a.install(runContext, modules); err != nil {
+			a.setState(StateFailed)
+			return err
+		}
+	}
+
+	a.setState(StateStarting)
+	startErr := a.start(runContext, modules)
+	if startErr == nil {
+		a.setState(StateRunning)
+		for runContext.Err() == nil {
+			select {
+			case <-runContext.Done():
+			case <-reloadSignals:
+				if err := a.Reload(runContext); err != nil {
+					a.logger.Error("Configuration reload failed", "error", err)
+				}
 			}
 		}
 	}
 
-	installModules := sortModules(a.Controller.modules)
-	for _, im := range installModules {
-		installer, ok := im.implementation.(Installer)
+	a.setState(StateStopping)
+	stopErr := a.stop(runContext, modules)
+
+	cause := context.Cause(runContext)
+	terminatedBySignal := len(terminationSignals) != 0 && parent.Err() == nil && runParent.Err() != nil && errors.Is(cause, context.Cause(runParent))
+	if request, requested := cause.(*shutdownRequest); requested {
+		cause = request.cause
+	} else if terminatedBySignal || (parent.Err() != nil && errors.Is(cause, context.Canceled)) {
+		cause = nil
+	}
+	result := errors.Join(startErr, cause, stopErr)
+	if result != nil {
+		a.setState(StateFailed)
+	} else {
+		a.setState(StateStopped)
+	}
+	return result
+}
+
+func partitionSignals(signals []os.Signal) (termination []os.Signal, reload bool) {
+	for _, processSignal := range signals {
+		if processSignal == syscall.SIGHUP {
+			reload = true
+			continue
+		}
+		termination = append(termination, processSignal)
+	}
+	return termination, reload
+}
+
+// Shutdown requests termination of a running application without waiting for
+// teardown. It is safe for concurrent use; the first request determines the
+// cancellation cause and subsequent requests have no effect.
+//
+// A nil cause requests normal termination. Shutdown returns ErrNotRunning when
+// Run has not installed its cancellation function or has already returned.
+func (a *Application) Shutdown(cause error) error {
+	a.stateMu.RLock()
+	cancel := a.runCancel
+	a.stateMu.RUnlock()
+	if cancel == nil {
+		return ErrNotRunning
+	}
+	a.shutdown.Do(func() { cancel(&shutdownRequest{cause: cause}) })
+	return nil
+}
+
+// Exit is an alias for Shutdown.
+func (a *Application) Exit(cause error) error { return a.Shutdown(cause) }
+
+// Reload atomically reloads registered settings from the configured file.
+// Structured targets registered with Context.BindConfig are startup-only and
+// are not modified. A failed reload preserves the last committed settings.
+//
+// Reload requires StateRunning and a file configured by WithConfigFile. It
+// returns ErrInvalidState or ErrNoConfigFile when those conditions are not met.
+func (a *Application) Reload(ctx context.Context) error {
+	if a.State() != StateRunning {
+		return fmt.Errorf("%w: cannot reload from %s", ErrInvalidState, a.State())
+	}
+	if a.configuration == nil || a.configFile == "" {
+		return ErrNoConfigFile
+	}
+	a.logger.Info("Reloading configuration", "file", a.configFile)
+	if diags := a.configuration.ReloadFile(newContext(ctx, a, "").Context, a.configFile); diags.HasErrors() {
+		return fmt.Errorf("failed to reload application configuration: %w", diags)
+	}
+	return nil
+}
+
+func (a *Application) prepare(parent context.Context) ([]*registeredModule, error) {
+	state := a.State()
+	if state == StateReady {
+		return a.modules.snapshot(), nil
+	}
+	if state != StateNew {
+		return nil, fmt.Errorf("%w: cannot prepare from %s", ErrInvalidState, state)
+	}
+
+	modules := a.modules.freeze()
+	a.setState(StateInitializing)
+	for _, module := range modules {
+		module.state = moduleStateInitializing
+		if initializer, ok := module.implementation.(Initializer); ok {
+			if err := initializer.Initialize(newContext(parent, a, module.name)); err != nil {
+				a.setState(StateFailed)
+				return nil, phaseError(module.name, "initialize", err)
+			}
+		}
+		module.state = moduleStateInitialized
+	}
+
+	a.setState(StateConfiguring)
+	if err := a.loadConfig(newContext(parent, a, "").Context); err != nil {
+		a.setState(StateFailed)
+		return nil, err
+	}
+	a.setState(StateReady)
+	return modules, nil
+}
+
+func (a *Application) install(parent context.Context, modules []*registeredModule) error {
+	for _, module := range modules {
+		installer, ok := module.implementation.(Installer)
 		if !ok {
 			continue
 		}
-
-		if err := installer.Install(ctx); err != nil {
-			return fmt.Errorf("failed to install module %q: %w", im.name, err)
+		module.state = moduleStateInstalling
+		if err := installer.Install(newContext(parent, a, module.name)); err != nil {
+			return phaseError(module.name, "install", err)
 		}
+		module.state = moduleStateInstalled
 	}
-
 	return nil
 }
 
-// Run the application returning the error that terminated execution or nil if terminated normally
-func (a *Application) Run(ctx context.Context) error {
-	a.Lock()
-	defer a.Unlock()
-
-	ctx = a.initialize(ctx)
-	if err := a.loadConfig(ctx); err != nil {
-		return err
-	}
-
-	a.errorCh = make(chan error, 1)
-	defer func() { close(a.errorCh); a.errorCh = nil }()
-
-	startupTime := time.Now()
-	a.Logger.Info("Starting application")
-	defer func() { a.Logger.Info("Stopped application", "duration", time.Since(startupTime)) }()
-
-	// listen to OS signals
-	schan := make(chan os.Signal, 6)
-	defer close(schan)
-
-	// wire these up early
-	signal.Notify(schan, syscall.SIGTERM, syscall.SIGABRT, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGHUP, syscall.Signal(21))
-	defer signal.Stop(schan)
-
-	// create a cancellation for the signals
-	cancelCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var applicationError error
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	// run the modules
-	go func() {
-		// run the application in the background
-		applicationError = a.Controller.Run(cancelCtx)
-		wg.Done()
-		cancel()
-	}()
-
-	// wait for exit scenarios
-APP_RUN:
-	for {
-		select {
-		case err := <-a.errorCh:
-			cancel()
-
-			// we wait for the controller to stop running so we can set the error
-			wg.Wait()
-
-			applicationError = (&Error{Errors: []error{err}}).Append(applicationError)
-
-		case <-cancelCtx.Done():
-			break APP_RUN
-
-		case sig := <-schan:
-			a.Logger.Debug("Signal received", "signal", sig)
-			if sig == syscall.SIGHUP || sig == syscall.Signal(21) {
-				a.Logger.Debug("TODO: Implement application reload hooks")
-				// TODO: implement reload
-				break
+func (a *Application) start(parent context.Context, modules []*registeredModule) error {
+	for _, module := range modules {
+		if hook, ok := module.implementation.(PreStarter); ok {
+			module.state = moduleStatePreStarting
+			if err := hook.PreStart(newContext(parent, a, module.name)); err != nil {
+				return phaseError(module.name, "pre-start", err)
 			}
-
-			cancel()
-			break APP_RUN
 		}
 	}
-
-	// wait for finalization of Controller shutdown
-	wg.Wait()
-
-	// this is a bit of a hacky thing, but allows us to not return errors for help command line and invalid commands so the top level caller can if err != nil panic(err)
-	if applicationError != nil && applicationError != context.Canceled && !errors.Is(applicationError, flag.ErrHelp) && !strings.Contains(applicationError.Error(), "flag provided but not defined:") {
-		return applicationError
+	for _, module := range modules {
+		module.state = moduleStateStarting
+		module.startWasEntered = true
+		if err := module.implementation.Start(newContext(parent, a, module.name)); err != nil {
+			return phaseError(module.name, "start", err)
+		}
+		module.state = moduleStateStarted
 	}
-
+	for _, module := range modules {
+		if hook, ok := module.implementation.(PostStarter); ok {
+			module.state = moduleStatePostStarting
+			if err := hook.PostStart(newContext(parent, a, module.name)); err != nil {
+				return phaseError(module.name, "post-start", err)
+			}
+		}
+		module.state = moduleStateRunning
+	}
 	return nil
 }
 
-// Exit will shutdown the application with the specified error.
-//
-// This call can be made from any go routine, only the first call to Exit will be read (first in) and shutdown the application
-func (a *Application) Exit(err error) {
-	if a.errorCh == nil || err == nil {
-		return
-	}
+func (a *Application) stop(runContext context.Context, modules []*registeredModule) error {
+	shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(runContext), a.shutdownTimeout)
+	defer cancel()
+	var result error
 
-	a.errorCh <- err
+	for index := len(modules) - 1; index >= 0; index-- {
+		module := modules[index]
+		if module.startWasEntered {
+			if hook, ok := module.implementation.(PreStopper); ok {
+				module.state = moduleStatePreStopping
+				result = errors.Join(result, wrapPhaseError(module.name, "pre-stop", hook.PreStop(newContext(shutdownContext, a, module.name))))
+			}
+		}
+	}
+	for index := len(modules) - 1; index >= 0; index-- {
+		module := modules[index]
+		if module.startWasEntered {
+			module.state = moduleStateStopping
+			result = errors.Join(result, wrapPhaseError(module.name, "stop", module.implementation.Stop(newContext(shutdownContext, a, module.name))))
+		}
+	}
+	for index := len(modules) - 1; index >= 0; index-- {
+		module := modules[index]
+		if module.startWasEntered {
+			if hook, ok := module.implementation.(PostStopper); ok {
+				module.state = moduleStatePostStopping
+				result = errors.Join(result, wrapPhaseError(module.name, "post-stop", hook.PostStop(newContext(shutdownContext, a, module.name))))
+			}
+			module.state = moduleStateStopped
+		}
+	}
+	return errors.Join(result, shutdownContext.Err())
 }
 
-func (a *Application) initialize(ctx context.Context) context.Context {
-	if a.Controller == nil {
-		a.Controller = &Controller{}
-	}
+func phaseError(module, phase string, err error) error {
+	return &PhaseError{Module: module, Phase: phase, Err: err}
+}
 
-	a.Controller.logger = a.Logger
-	ctx = context.WithValue(ctx, applicationContextKey, a)
-
-	if a.Settings == nil {
-		// use whatever is configured in the context
-		a.Settings = config.FromContext(ctx)
+func wrapPhaseError(module, phase string, err error) error {
+	if err == nil {
+		return nil
 	}
-
-	// some defaults
-	if a.Name == "" {
-		a.Name = "Portcullis"
-	}
-	if a.Version == "" {
-		a.Version = "0.0.0"
-	}
-
-	return ctx
+	return phaseError(module, phase, err)
 }
 
 func (a *Application) loadConfig(ctx context.Context) error {
-	if a.configuration == nil {
+	if a.configuration == nil || a.configFile == "" {
+		if !a.settings.Loaded() {
+			return a.settings.Load(ctx)
+		}
 		return nil
 	}
 
-	if a.configFile == "" {
-		return nil
-	}
-
-	a.Logger.Info("Loading configuration", "file", a.configFile)
+	a.logger.Info("Loading configuration", "file", a.configFile)
 	if diags := a.configuration.DecodeFile(ctx, a.configFile); diags.HasErrors() {
 		return fmt.Errorf("failed to load application configuration: %w", diags)
 	}
