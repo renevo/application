@@ -65,6 +65,16 @@ func TestHCL(t *testing.T) {
 				Hello string `config:"hello,optional"`
 			}{Hello: "set-from-env"},
 		},
+		{
+			name:  "env without default",
+			input: `hello = env("TEST")`,
+			target: &struct {
+				Hello string `config:"hello,optional"`
+			}{},
+			want: &struct {
+				Hello string `config:"hello,optional"`
+			}{Hello: "set-from-env"},
+		},
 	}
 
 	for _, test := range tests {
