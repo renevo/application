@@ -153,9 +153,9 @@ func (c Configuration) decode(ctx context.Context, filename string, src []byte, 
 
 	var loadErr error
 	if reload {
-		loadErr = app.settings.Reload(ctx, hclSettingsSource{values: values})
+		loadErr = app.settings.Reload(ctx, hclSettingsSource{values: values}, app.environmentSource())
 	} else {
-		loadErr = app.settings.Load(ctx, hclSettingsSource{values: values})
+		loadErr = app.settings.Load(ctx, hclSettingsSource{values: values}, app.environmentSource())
 	}
 	if loadErr != nil {
 		diags = diags.Append(&hcl.Diagnostic{

@@ -18,8 +18,9 @@ taking ownership of behavior that belongs in individual modules.
 - One application-wide graceful shutdown deadline.
 - Hierarchical settings backed by [`github.com/renevo/config`](https://pkg.go.dev/github.com/renevo/config).
 - Native HCL and JSON configuration with transactional validation and commit.
+- Automatic environment configuration with optional application prefixes.
 - Typed structured HCL bindings for repeated, labeled, and nested blocks.
-- Atomic runtime reload for registered settings.
+- Atomic runtime reload across registered scalar configuration sources.
 - Opt-in interrupt and termination signal handling.
 - Structured errors compatible with `errors.Is` and `errors.As`.
 
@@ -147,8 +148,37 @@ http {
 ```
 
 Settings are decoded through their registered codecs and committed atomically.
-`Application.Reload` reparses the configured file and atomically replaces only
-settings; failed reloads retain the last committed values.
+Environment values are loaded automatically for every registered scalar
+setting. Dots and other separators become underscores and names are uppercased,
+so `Http.Address` maps to `HTTP_ADDRESS` and
+`Http.Server.Read_timeout` maps to `HTTP_SERVER_READ_TIMEOUT`.
+
+Use `WithEnvPrefix` to namespace generated names:
+
+```go
+app, err := application.New(
+	"example",
+	"1.0.0",
+	application.WithEnvPrefix("MYAPP"),
+)
+```
+
+The prefixed address setting is read from `MYAPP_HTTP_ADDRESS`. Prefixes are
+uppercased and surrounding underscores are removed. Invalid portable identifier
+characters are rejected during application construction.
+
+Scalar precedence is registered default, then HCL or JSON, then environment.
+Environment text is decoded by the setting's registered codec, so values such
+as durations and booleans use the same validation as file values. A present
+environment variable with an empty value is an explicit override. If two
+setting paths normalize to the same environment name, configuration loading
+fails rather than choosing one.
+
+`Application.Reload` atomically reloads every scalar source. File-backed
+applications reparse the file and re-read environment values. Applications
+without a file re-read environment values over registered defaults. Removing
+an environment variable reveals the file value or, without a file, restores
+the registered default. Failed reloads retain the last committed settings.
 
 ### Structured HCL
 
@@ -172,7 +202,8 @@ func (module *router) Initialize(ctx *application.Context) error {
 
 Structured bindings are staged and published only after the complete initial
 configuration succeeds. They are startup-only and are not changed by runtime
-reload.
+reload. File reload still validates structured HCL before committing scalar
+settings.
 
 Both native HCL (`.hcl`) and JSON (`.json`) files are supported.
 
@@ -190,11 +221,11 @@ err := app.Run(ctx, application.WithSignals())
 ```
 
 With no arguments, `WithSignals` handles `SIGTERM`, `SIGABRT`, `SIGQUIT`,
-`SIGINT`, `SIGHUP`, and signal 21. `SIGHUP` always triggers settings reload;
-the other signals request graceful shutdown. Use explicit arguments to select
-a different set, including `WithSignals(syscall.SIGHUP)` for reload-only signal
-handling. Without this option, the package responds only to the parent context
-and explicit `Shutdown` or `Reload` calls.
+`SIGINT`, `SIGHUP`, and signal 21. `SIGHUP` always triggers scalar configuration
+reload; the other signals request graceful shutdown. Use explicit arguments to
+select a different set, including `WithSignals(syscall.SIGHUP)` for reload-only
+signal handling. Without this option, the package responds only to the parent
+context and explicit `Shutdown` or `Reload` calls.
 
 ## Error Handling
 

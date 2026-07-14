@@ -39,6 +39,7 @@ type Application struct {
 	configuration   *Configuration
 	configBindings  []configBinding
 	configFile      string
+	envPrefix       string
 	shutdownTimeout time.Duration
 }
 
@@ -345,18 +346,19 @@ func (a *Application) Shutdown(cause error) error {
 // Exit is an alias for Shutdown.
 func (a *Application) Exit(cause error) error { return a.Shutdown(cause) }
 
-// Reload atomically reloads registered settings from the configured file.
+// Reload atomically reloads registered settings from all configured scalar
+// sources. File-backed applications reload the file and environment; otherwise
+// registered defaults and environment values are re-evaluated.
 // Structured targets registered with Context.BindConfig are startup-only and
 // are not modified. A failed reload preserves the last committed settings.
 //
-// Reload requires StateRunning and a file configured by WithConfigFile. It
-// returns ErrInvalidState or ErrNoConfigFile when those conditions are not met.
+// Reload requires StateRunning and returns ErrInvalidState otherwise.
 func (a *Application) Reload(ctx context.Context) error {
 	if a.State() != StateRunning {
 		return fmt.Errorf("%w: cannot reload from %s", ErrInvalidState, a.State())
 	}
 	if a.configuration == nil || a.configFile == "" {
-		return ErrNoConfigFile
+		return a.settings.Reload(ctx, a.environmentSource())
 	}
 	a.logger.Info("Reloading configuration", "file", a.configFile)
 	if diags := a.configuration.ReloadFile(newContext(ctx, a, "").Context, a.configFile); diags.HasErrors() {
@@ -488,7 +490,7 @@ func wrapPhaseError(module, phase string, err error) error {
 func (a *Application) loadConfig(ctx context.Context) error {
 	if a.configuration == nil || a.configFile == "" {
 		if !a.settings.Loaded() {
-			return a.settings.Load(ctx)
+			return a.settings.Load(ctx, a.environmentSource())
 		}
 		return nil
 	}
@@ -499,4 +501,8 @@ func (a *Application) loadConfig(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (a *Application) environmentSource() environmentSettingsSource {
+	return environmentSettingsSource{settings: a.settings, prefix: a.envPrefix}
 }
