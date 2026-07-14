@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -114,6 +115,9 @@ func TestApplication(t *testing.T) {
 		{
 			name: "opt-in signal shutdown",
 			run: func(t *testing.T, is *is.I) {
+				if runtime.GOOS == "windows" {
+					t.Skip("Windows cannot deliver termination signals with os.Process.Signal")
+				}
 				var events []string
 				var eventMu sync.Mutex
 				started := make(chan struct{})
@@ -124,9 +128,11 @@ func TestApplication(t *testing.T) {
 				runDone := make(chan error, 1)
 				go func() { runDone <- application.Run(context.Background(), WithSignals(syscall.SIGTERM)) }()
 				<-started
-				is.NoErr(syscall.Kill(os.Getpid(), syscall.SIGTERM)) // registered SIGTERM should reach the application
-				is.NoErr(<-runDone)                                  // terminating signals should be normal shutdown
-				is.Equal(application.State(), StateStopped)          // signal shutdown should leave the application stopped
+				process, err := os.FindProcess(os.Getpid())
+				is.NoErr(err)                               // current process should be addressable for signal delivery
+				is.NoErr(process.Signal(syscall.SIGTERM))   // registered SIGTERM should reach the application
+				is.NoErr(<-runDone)                         // terminating signals should be normal shutdown
+				is.Equal(application.State(), StateStopped) // signal shutdown should leave the application stopped
 			},
 		},
 		{
