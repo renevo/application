@@ -180,7 +180,9 @@ func (a *Application) Validate(ctx context.Context) error {
 // WriteConfigTemplate initializes modules and writes a native HCL starter
 // configuration containing their registered defaults. It does not read the
 // configured file or environment sources. The operation is terminal for the
-// Application and leaves it stopped on success or failed on error.
+// Application once initialization begins, leaving it stopped on success or
+// failed on initialization, rendering, or writing errors. Precondition errors
+// such as a nil writer or invalid state do not change the application state.
 //
 // A nil context is treated as context.Background. Concurrent lifecycle work
 // returns ErrApplicationBusy.
