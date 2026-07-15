@@ -222,12 +222,12 @@ if err != nil {
 }
 
 if err := app.WriteConfigTemplate(context.Background(), file); err != nil {
-	file.Close()
-	os.Remove(filename)
+	_ = file.Close()
+	_ = os.Remove(filename)
 	return err
 }
 if err := file.Close(); err != nil {
-	os.Remove(filename)
+	_ = os.Remove(filename)
 	return err
 }
 ```
