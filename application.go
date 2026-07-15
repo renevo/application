@@ -37,10 +37,8 @@ type Application struct {
 	runCancel   context.CancelCauseFunc
 	shutdown    sync.Once
 
-	configuration   *Configuration
 	configBindings  []configBinding
-	configFile      string
-	envPrefix       string
+	configSources   []config.Source
 	shutdownTimeout time.Duration
 }
 
@@ -99,6 +97,8 @@ func New(name, version string, opts ...Option) (*Application, error) {
 		state:           StateNew,
 		shutdownTimeout: 30 * time.Second,
 	}
+
+	app.configSources = []config.Source{config.EnvironmentSource("")}
 
 	for _, opt := range opts {
 		if opt != nil {
@@ -397,8 +397,7 @@ func (a *Application) Shutdown(cause error) error {
 func (a *Application) Exit(cause error) error { return a.Shutdown(cause) }
 
 // Reload atomically reloads registered settings from all configured scalar
-// sources. File-backed applications reload the file and environment; otherwise
-// registered defaults and environment values are re-evaluated.
+// sources in precedence order.
 // Structured targets registered with Context.BindConfig are startup-only and
 // are not modified. A failed reload preserves the last committed settings.
 //
@@ -407,14 +406,7 @@ func (a *Application) Reload(ctx context.Context) error {
 	if a.State() != StateRunning {
 		return fmt.Errorf("%w: cannot reload from %s", ErrInvalidState, a.State())
 	}
-	if a.configuration == nil || a.configFile == "" {
-		return a.settings.Reload(ctx, a.environmentSource())
-	}
-	a.logger.Info("Reloading configuration", "file", a.configFile)
-	if diags := a.configuration.ReloadFile(newContext(ctx, a, "").Context, a.configFile); diags.HasErrors() {
-		return fmt.Errorf("failed to reload application configuration: %w", diags)
-	}
-	return nil
+	return a.loadConfigSources(newContext(ctx, a, "").Context, true)
 }
 
 func (a *Application) prepare(parent context.Context) ([]*registeredModule, error) {
@@ -545,21 +537,28 @@ func wrapPhaseError(module, phase string, err error) error {
 }
 
 func (a *Application) loadConfig(ctx context.Context) error {
-	if a.configuration == nil || a.configFile == "" {
-		if !a.settings.Loaded() {
-			return a.settings.Load(ctx, a.environmentSource())
-		}
+	if a.settings.Loaded() {
 		return nil
 	}
-
-	a.logger.Info("Loading configuration", "file", a.configFile)
-	if diags := a.configuration.DecodeFile(ctx, a.configFile); diags.HasErrors() {
-		return fmt.Errorf("failed to load application configuration: %w", diags)
-	}
-
-	return nil
+	return a.loadConfigSources(ctx, false)
 }
 
-func (a *Application) environmentSource() environmentSettingsSource {
-	return environmentSettingsSource{settings: a.settings, prefix: a.envPrefix}
+func (a *Application) loadConfigSources(ctx context.Context, reload bool) error {
+	transaction := new(configLoadTransaction)
+	ctx = context.WithValue(ctx, configLoadContextKey, transaction)
+	var err error
+	if reload {
+		err = a.settings.Reload(ctx, a.configSources...)
+	} else {
+		err = a.settings.Load(ctx, a.configSources...)
+	}
+	if err != nil {
+		return err
+	}
+	if !reload {
+		for _, binding := range transaction.bindings {
+			binding.target.Elem().Set(binding.value)
+		}
+	}
+	return nil
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/matryer/is"
 
 	"github.com/renevo/application/confighcl"
+	"github.com/renevo/config"
 )
 
 func TestHCL(t *testing.T) {
@@ -161,11 +164,23 @@ func TestApplicationConfiguration(t *testing.T) {
 				filename := filepath.Join(t.TempDir(), "application.hcl")
 				writeTestConfig(is, filename, `http { read_timeout = "15s" }`)
 				module := new(settingsHCLModule)
-				application, err := New("test", "1.0.0", WithConfigFile(filename), WithModule("http", module))
+				application, err := New("test", "1.0.0", withTestConfigFile(filename), WithModule("http", module))
 				is.NoErr(err)                                        // application construction should accept the configuration file
 				is.NoErr(application.Validate(context.Background())) // validation should load registered settings
 				is.Equal(module.readTimeout, 15*time.Second)         // HCL value should pass through the duration codec
 				is.True(application.Settings().Loaded())             // successful validation should commit the settings set
+			},
+		},
+		{
+			name: "missing file diagnostics",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "missing.hcl")
+				application, err := New("test", "1.0.0", withTestConfigFile(filename), WithModule("http", new(settingsHCLModule)))
+				is.NoErr(err)
+				err = application.Validate(context.Background())
+				is.True(err != nil)
+				is.True(strings.Contains(err.Error(), "Configuration file not found"))
+				is.True(strings.Contains(err.Error(), filename))
 			},
 		},
 		{
@@ -178,13 +193,30 @@ func TestApplicationConfiguration(t *testing.T) {
 				application, err := New(
 					"test",
 					"1.0.0",
-					WithConfigFile(filename),
-					WithEnvPrefix("myapp_"),
+					WithConfigSources(ConfigFileSource(filename), config.EnvironmentSource("myapp")),
 					WithModule("http", module),
 				)
 				is.NoErr(err)                                        // application construction should normalize the environment prefix
 				is.NoErr(application.Validate(context.Background())) // validation should compose file and environment sources
 				is.Equal(module.readTimeout, 25*time.Second)         // environment should override the file value through the duration codec
+			},
+		},
+		{
+			name: "file overrides environment when ordered last",
+			run: func(t *testing.T, is *is.I) {
+				t.Setenv("HTTP_READ_TIMEOUT", "25s")
+				filename := filepath.Join(t.TempDir(), "application.hcl")
+				writeTestConfig(is, filename, `http { read_timeout = "15s" }`)
+				module := new(settingsHCLModule)
+				application, err := New(
+					"test",
+					"1.0.0",
+					WithConfigSources(config.EnvironmentSource(""), ConfigFileSource(filename)),
+					WithModule("http", module),
+				)
+				is.NoErr(err)
+				is.NoErr(application.Validate(context.Background()))
+				is.Equal(module.readTimeout, 15*time.Second)
 			},
 		},
 		{
@@ -198,6 +230,7 @@ func TestApplicationConfiguration(t *testing.T) {
 				runDone := make(chan error, 1)
 				go func() { runDone <- application.Run(context.Background()) }()
 				<-started
+				waitForApplicationState(t, application, StateRunning)
 				is.Equal(module.readTimeout, 15*time.Second) // initial preparation should load the environment value
 
 				is.NoErr(os.Setenv("HTTP_READ_TIMEOUT", "invalid"))
@@ -222,11 +255,12 @@ func TestApplicationConfiguration(t *testing.T) {
 				writeTestConfig(is, filename, `http { read_timeout = "15s" }`)
 				started := make(chan struct{})
 				module := &settingsHCLModule{started: started}
-				application, err := New("test", "1.0.0", WithConfigFile(filename), WithModule("http", module))
+				application, err := New("test", "1.0.0", withTestConfigFile(filename), WithModule("http", module))
 				is.NoErr(err) // application construction should accept reloadable settings
 				runDone := make(chan error, 1)
 				go func() { runDone <- application.Run(context.Background()) }()
 				<-started
+				waitForApplicationState(t, application, StateRunning)
 
 				writeTestConfig(is, filename, `http { read_timeout = "invalid" }`)
 				is.True(application.Reload(context.Background()) != nil) // invalid reload should report a decoding error
@@ -253,7 +287,7 @@ route "health" { target = "/healthz" }
 				application, err := New(
 					"test",
 					"1.0.0",
-					WithConfigFile(filename),
+					withTestConfigFile(filename),
 					WithModule("http", settingsModule),
 					WithModule("router", routerModule),
 				)
@@ -261,6 +295,7 @@ route "health" { target = "/healthz" }
 				runDone := make(chan error, 1)
 				go func() { runDone <- application.Run(context.Background()) }()
 				<-started
+				waitForApplicationState(t, application, StateRunning)
 				is.Equal(settingsModule.readTimeout, 15*time.Second)
 				is.Equal(routerModule.config.Routes[0].Target, "/healthz")
 
@@ -290,7 +325,7 @@ route "metrics" {
 `
 				writeTestConfig(is, filename, source)
 				module := &customHCLModule{config: routeConfig{Prefix: "/api"}}
-				application, err := New("test", "1.0.0", WithConfigFile(filename), WithModule("router", module))
+				application, err := New("test", "1.0.0", withTestConfigFile(filename), WithModule("router", module))
 				is.NoErr(err)                                                      // application construction should accept a structured binding
 				is.NoErr(application.Validate(context.Background()))               // validation should decode all route blocks
 				is.Equal(len(module.config.Routes), 2)                             // repeated route blocks should populate the route slice
@@ -312,7 +347,7 @@ route "metrics" {
 				application, err := New(
 					"test",
 					"1.0.0",
-					WithConfigFile(filename),
+					withTestConfigFile(filename),
 					WithModule("map", &bindingModule{target: &mapTarget}),
 					WithModule("struct", &bindingModule{target: &structTarget}),
 				)
@@ -345,7 +380,7 @@ backend {
 				application, err := New(
 					"test",
 					"1.0.0",
-					WithConfigFile(filename),
+					withTestConfigFile(filename),
 					WithModule("rollback", &bindingModule{target: &target}),
 				)
 				is.NoErr(err)                                              // application construction should accept a pre-populated structured binding
@@ -372,7 +407,7 @@ backend {
 				application, err := New(
 					"test",
 					"1.0.0",
-					WithConfigFile(filename),
+					withTestConfigFile(filename),
 					WithModule("slices", &bindingModule{target: &target}),
 				)
 				is.NoErr(err)                                        // application construction should accept overlapping slice views
@@ -389,5 +424,20 @@ backend {
 		t.Run(test.name, func(t *testing.T) {
 			test.run(t, is.New(t))
 		})
+	}
+}
+
+func withTestConfigFile(filename string) Option {
+	return WithConfigSources(ConfigFileSource(filename), config.EnvironmentSource(""))
+}
+
+func waitForApplicationState(t *testing.T, application *Application, want State) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for application.State() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("application state = %s, want %s", application.State(), want)
+		}
+		runtime.Gosched()
 	}
 }

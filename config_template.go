@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
@@ -18,7 +19,7 @@ import (
 type templateSetting struct {
 	path        string
 	value       string
-	valueType   string
+	valueType   reflect.Type
 	description string
 }
 
@@ -38,7 +39,7 @@ func (a *Application) configTemplate() ([]byte, error) {
 		settings = append(settings, templateSetting{
 			path:        path,
 			value:       setting.DefaultValue,
-			valueType:   setting.Type(),
+			valueType:   setting.ValueType(),
 			description: setting.Description,
 		})
 		return true
@@ -105,22 +106,33 @@ func appendSettingTemplate(node *templateSettingNode, body *hclwrite.Body) error
 }
 
 func scalarTemplateValue(setting templateSetting) (cty.Value, error) {
-	switch setting.valueType {
-	case "bool":
+	valueType := setting.valueType
+	for valueType != nil && valueType.Kind() == reflect.Pointer {
+		valueType = valueType.Elem()
+	}
+	if valueType == reflect.TypeFor[time.Duration]() {
+		return cty.StringVal(setting.value), nil
+	}
+
+	if valueType == nil {
+		return cty.StringVal(setting.value), nil
+	}
+	switch valueType.Kind() {
+	case reflect.Bool:
 		switch setting.value {
 		case "true":
 			return cty.BoolVal(true), nil
 		case "false":
 			return cty.BoolVal(false), nil
 		default:
-			return cty.NilVal, fmt.Errorf("setting %q has invalid bool default %q", setting.path, setting.value)
+			return cty.StringVal(setting.value), nil
 		}
-	case "int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-		"float32", "float64":
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64:
 		value, err := cty.ParseNumberVal(setting.value)
 		if err != nil {
-			return cty.NilVal, fmt.Errorf("setting %q has invalid numeric default %q: %w", setting.path, setting.value, err)
+			return cty.StringVal(setting.value), nil
 		}
 		return value, nil
 	default:
