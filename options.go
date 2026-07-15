@@ -4,8 +4,11 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"syscall"
 	"time"
+
+	"github.com/renevo/config"
 )
 
 // Option configures an Application during New. Returning an error aborts
@@ -21,31 +24,12 @@ func WithModule(name string, m Module) Option {
 	}
 }
 
-// WithConfigFile selects the HCL or JSON file loaded during application
-// preparation. The path must be nonempty; reading and extension validation are
-// deferred until Validate, Install, or Run.
-func WithConfigFile(filename string) Option {
+// WithConfigSources replaces the ordered scalar configuration sources. Later
+// sources override earlier sources. Calling WithConfigSources with no sources
+// disables external configuration and loads registered defaults only.
+func WithConfigSources(sources ...config.Source) Option {
 	return func(a *Application) error {
-		if filename == "" {
-			return errors.New("configuration filename must not be empty")
-		}
-		a.configuration = &Configuration{}
-		a.configFile = filename
-		return nil
-	}
-}
-
-// WithEnvPrefix namespaces automatic environment setting names. Prefixes are
-// uppercased and surrounding underscores are removed, so "myapp" and
-// "MYAPP_" both map Http.Address to MYAPP_HTTP_ADDRESS. An empty prefix keeps
-// names unprefixed. Nonempty prefixes must be portable ASCII identifiers.
-func WithEnvPrefix(prefix string) Option {
-	return func(a *Application) error {
-		normalized, err := normalizeEnvironmentPrefix(prefix)
-		if err != nil {
-			return err
-		}
-		a.envPrefix = normalized
+		a.configSources = slices.Clone(sources)
 		return nil
 	}
 }

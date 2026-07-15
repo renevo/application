@@ -58,7 +58,7 @@ func TestEnvironmentSettingsSourceCollision(t *testing.T) {
 	is.True(strings.Contains(err.Error(), "Http.Read.Timeout"))
 }
 
-func TestWithEnvPrefix(t *testing.T) {
+func TestEnvironmentSourcePrefix(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -76,13 +76,17 @@ func TestWithEnvPrefix(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			is := is.New(t)
-			application, err := New("test", "1.0.0", WithEnvPrefix(test.input))
+			application, err := New("test", "1.0.0", WithConfigSources(EnvironmentSource(test.input)))
+			is.NoErr(err)
+			err = application.Validate(context.Background())
 			if !test.valid {
-				is.True(err != nil) // invalid prefixes should fail application construction
+				is.True(err != nil) // invalid prefixes should fail when the source loads
 				return
 			}
-			is.NoErr(err)                              // portable prefixes should configure the application
-			is.Equal(application.envPrefix, test.want) // option should retain the normalized prefix
+			is.NoErr(err) // portable prefixes should load successfully
+			prefix, normalizeErr := normalizeEnvironmentPrefix(test.input)
+			is.NoErr(normalizeErr)
+			is.Equal(prefix, test.want)
 		})
 	}
 }

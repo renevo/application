@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/matryer/is"
+	"github.com/renevo/config"
 )
 
 type lifecycleRecorder struct {
@@ -231,3 +232,47 @@ func TestApplication(t *testing.T) {
 		})
 	}
 }
+
+func TestWithConfigSources(t *testing.T) {
+	is := is.New(t)
+	first := config.ValuesSource("first", map[string]string{"value": "first"})
+	second := config.ValuesSource("second", map[string]string{"value": "second"})
+	sources := []config.Source{first}
+
+	module := &configSourceModule{}
+	application, err := New("test", "1.0.0", WithConfigSources(sources...), WithModule("source", module))
+	is.NoErr(err)
+	sources[0] = second
+	is.NoErr(application.Validate(context.Background()))
+	is.Equal(module.value, "first")
+
+	module = &configSourceModule{}
+	application, err = New(
+		"test",
+		"1.0.0",
+		WithConfigSources(second),
+		WithConfigSources(first, nil, second),
+		WithModule("source", module),
+	)
+	is.NoErr(err)
+	is.NoErr(application.Validate(context.Background()))
+	is.Equal(module.value, "second")
+
+	defaults := &configSourceModule{value: "default"}
+	application, err = New("test", "1.0.0", WithConfigSources(), WithModule("source", defaults))
+	is.NoErr(err)
+	is.NoErr(application.Validate(context.Background()))
+	is.Equal(defaults.value, "default")
+}
+
+type configSourceModule struct {
+	value string
+}
+
+func (module *configSourceModule) Initialize(ctx *Context) error {
+	ctx.Settings().Setting("value", &module.value, "test value")
+	return nil
+}
+
+func (*configSourceModule) Start(*Context) error { return nil }
+func (*configSourceModule) Stop(*Context) error  { return nil }

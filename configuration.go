@@ -34,6 +34,53 @@ type hclSettingsSource struct {
 	values []config.RawValue
 }
 
+type stagedBinding struct {
+	target reflect.Value
+	value  reflect.Value
+}
+
+type configLoadTransaction struct {
+	fileLoaded bool
+	bindings   []stagedBinding
+}
+
+var configLoadContextKey = contextKey("config-load")
+
+type configFileSource struct {
+	filename string
+}
+
+// ConfigFileSource reads scalar settings and structured bindings from an HCL
+// or JSON file. The filename is read each time configuration is loaded.
+func ConfigFileSource(filename string) config.Source {
+	return configFileSource{filename: filename}
+}
+
+func (source configFileSource) Load(ctx context.Context) ([]config.RawValue, error) {
+	if source.filename == "" {
+		return nil, errors.New("configuration filename must not be empty")
+	}
+	transaction, _ := ctx.Value(configLoadContextKey).(*configLoadTransaction)
+	if transaction == nil {
+		return nil, errors.New("configuration file source requires an application load context")
+	}
+	if transaction.fileLoaded {
+		return nil, errors.New("multiple configuration file sources are not supported")
+	}
+	transaction.fileLoaded = true
+
+	src, err := os.ReadFile(source.filename)
+	if err != nil {
+		return nil, err
+	}
+	values, bindings, diags := (Configuration{}).decodeSource(ctx, source.filename, src)
+	if diags.HasErrors() {
+		return nil, diags
+	}
+	transaction.bindings = bindings
+	return values, nil
+}
+
 func (source hclSettingsSource) Load(context.Context) ([]config.RawValue, error) {
 	return slices.Clone(source.values), nil
 }
@@ -85,6 +132,34 @@ func (c Configuration) Decode(ctx context.Context, filename string, src []byte) 
 }
 
 func (c Configuration) decode(ctx context.Context, filename string, src []byte, reload bool) hcl.Diagnostics {
+	values, staged, diags := c.decodeSource(ctx, filename, src)
+	if diags.HasErrors() {
+		return diags
+	}
+
+	app := FromContext(ctx)
+	var loadErr error
+	if reload {
+		loadErr = app.settings.Reload(ctx, hclSettingsSource{values: values}, EnvironmentSource(""))
+	} else {
+		loadErr = app.settings.Load(ctx, hclSettingsSource{values: values}, EnvironmentSource(""))
+	}
+	if loadErr != nil {
+		return diags.Append(&hcl.Diagnostic{
+			Severity: hcl.DiagError,
+			Summary:  "Failed to load settings",
+			Detail:   loadErr.Error(),
+		})
+	}
+	if !reload {
+		for _, binding := range staged {
+			binding.target.Elem().Set(binding.value)
+		}
+	}
+	return diags
+}
+
+func (c Configuration) decodeSource(ctx context.Context, filename string, src []byte) ([]config.RawValue, []stagedBinding, hcl.Diagnostics) {
 	var file *hcl.File
 	var diags hcl.Diagnostics
 
@@ -99,15 +174,15 @@ func (c Configuration) decode(ctx context.Context, filename string, src []byte, 
 			Summary:  "Unsupported file format",
 			Detail:   fmt.Sprintf("Cannot read from %s: unrecognized file format suffix %q.", filename, suffix),
 		})
-		return diags
+		return nil, nil, diags
 	}
 	if diags.HasErrors() {
-		return diags
+		return nil, nil, diags
 	}
 
 	app := FromContext(ctx)
 	if app == nil {
-		return diags.Append(&hcl.Diagnostic{
+		return nil, nil, diags.Append(&hcl.Diagnostic{
 			Severity: hcl.DiagError,
 			Summary:  "Application context missing",
 			Detail:   "Configuration decoding requires an application context.",
@@ -117,19 +192,15 @@ func (c Configuration) decode(ctx context.Context, filename string, src []byte, 
 	schema, schemaDiags := settingBodySchema(app.settings)
 	diags = diags.Extend(schemaDiags)
 	if diags.HasErrors() {
-		return diags
+		return nil, nil, diags
 	}
 
 	values, leftovers, decodeDiags := decodeSettingBody(file.Body, schema, c.EvalContext(ctx), filename, true)
 	diags = diags.Extend(decodeDiags)
 	if diags.HasErrors() {
-		return diags
+		return nil, nil, diags
 	}
 
-	type stagedBinding struct {
-		target reflect.Value
-		value  reflect.Value
-	}
 	staged := make([]stagedBinding, 0, len(app.configBindings))
 	for _, binding := range app.configBindings {
 		candidate := reflect.New(binding.target.Elem().Type())
@@ -148,29 +219,9 @@ func (c Configuration) decode(ctx context.Context, filename string, src []byte, 
 		diags = diags.Extend(confighcl.DecodeBody(leftovers, c.EvalContext(ctx), new(struct{})))
 	}
 	if diags.HasErrors() {
-		return diags
+		return nil, nil, diags
 	}
-
-	var loadErr error
-	if reload {
-		loadErr = app.settings.Reload(ctx, hclSettingsSource{values: values}, app.environmentSource())
-	} else {
-		loadErr = app.settings.Load(ctx, hclSettingsSource{values: values}, app.environmentSource())
-	}
-	if loadErr != nil {
-		diags = diags.Append(&hcl.Diagnostic{
-			Severity: hcl.DiagError,
-			Summary:  "Failed to load settings",
-			Detail:   loadErr.Error(),
-		})
-		return diags
-	}
-	if !reload {
-		for _, binding := range staged {
-			binding.target.Elem().Set(binding.value)
-		}
-	}
-	return diags
+	return values, staged, diags
 }
 
 type cloneVisit struct {

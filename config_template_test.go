@@ -64,7 +64,7 @@ func TestWriteConfigTemplate(t *testing.T) {
 	module := newTemplateTestModule()
 	application, err := New(
 		"test", "1.0.0",
-		WithConfigFile(missingConfig),
+		withTestConfigFile(missingConfig),
 		WithModule("worker", module),
 	)
 	is := is.New(t)
@@ -100,7 +100,7 @@ func TestWriteConfigTemplate(t *testing.T) {
 	roundTripModule.config.Prefix = ""
 	roundTrip, err := New(
 		"test", "1.0.0",
-		WithConfigFile(generatedFile),
+		withTestConfigFile(generatedFile),
 		WithModule("worker", roundTripModule),
 	)
 	is.NoErr(err)                                      // fresh application construction should accept generated HCL
@@ -117,7 +117,7 @@ func TestWriteConfigTemplate(t *testing.T) {
 
 	repeatedApplication, err := New(
 		"test", "1.0.0",
-		WithConfigFile(missingConfig),
+		withTestConfigFile(missingConfig),
 		WithModule("worker", newTemplateTestModule()),
 	)
 	is.NoErr(err) // equivalent fresh application construction should succeed

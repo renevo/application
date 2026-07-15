@@ -79,7 +79,10 @@ func main() {
 	app, err := application.New(
 		"example",
 		"1.0.0",
-		application.WithConfigFile("application.hcl"),
+		application.WithConfigSources(
+			application.ConfigFileSource("application.hcl"),
+			application.EnvironmentSource(""),
+		),
 		application.WithModule("worker", &worker{interval: 30 * time.Second}),
 	)
 	if err != nil {
@@ -148,37 +151,39 @@ http {
 ```
 
 Settings are decoded through their registered codecs and committed atomically.
-Environment values are loaded automatically for every registered scalar
-setting. Dots and other separators become underscores and names are uppercased,
-so `Http.Address` maps to `HTTP_ADDRESS` and
-`Http.Server.Read_timeout` maps to `HTTP_SERVER_READ_TIMEOUT`.
+By default, environment values are loaded for every registered scalar setting.
+Dots and other separators become underscores and names are uppercased, so
+`Http.Address` maps to `HTTP_ADDRESS` and `Http.Server.Read_timeout` maps to
+`HTTP_SERVER_READ_TIMEOUT`.
 
-Use `WithEnvPrefix` to namespace generated names:
+`WithConfigSources` replaces the complete ordered source list. Later sources
+override earlier sources. Use `EnvironmentSource` to namespace generated names:
 
 ```go
 app, err := application.New(
 	"example",
 	"1.0.0",
-	application.WithEnvPrefix("MYAPP"),
+	application.WithConfigSources(application.EnvironmentSource("MYAPP")),
 )
 ```
 
 The prefixed address setting is read from `MYAPP_HTTP_ADDRESS`. Prefixes are
 uppercased and surrounding underscores are removed. Invalid portable identifier
-characters are rejected during application construction.
+characters fail when configuration loads. Calling `WithConfigSources()` with no
+arguments disables external sources and loads registered defaults only.
 
-Scalar precedence is registered default, then HCL or JSON, then environment.
+For the common `ConfigFileSource(file), EnvironmentSource(prefix)` ordering,
+scalar precedence is registered default, then HCL or JSON, then environment.
+Reversing those source arguments makes the file override the environment.
 Environment text is decoded by the setting's registered codec, so values such
 as durations and booleans use the same validation as file values. A present
 environment variable with an empty value is an explicit override. If two
 setting paths normalize to the same environment name, configuration loading
 fails rather than choosing one.
 
-`Application.Reload` atomically reloads every scalar source. File-backed
-applications reparse the file and re-read environment values. Applications
-without a file re-read environment values over registered defaults. Removing
-an environment variable reveals the file value or, without a file, restores
-the registered default. Failed reloads retain the last committed settings.
+`Application.Reload` atomically reloads the configured scalar sources in the
+same order. Removing an environment variable reveals an earlier source value
+or the registered default. Failed reloads retain the last committed settings.
 
 ### Structured HCL
 
@@ -211,8 +216,8 @@ Both native HCL (`.hcl`) and JSON (`.json`) files are supported.
 
 `Application.WriteConfigTemplate` writes a complete native HCL starter file
 from defaults registered during module initialization. It does not read the
-configured file or environment variables, so it can create the file selected
-by `WithConfigFile` before that file exists.
+configured sources, so it can create a file selected by `ConfigFileSource`
+before that file exists.
 
 ```go
 filename := "application.hcl"

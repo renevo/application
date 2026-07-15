@@ -21,7 +21,10 @@ func main() {
 	app, err := application.New(
 		"simple-example",
 		"1.0.0",
-		application.WithConfigFile(*configFile),
+		application.WithConfigSources(
+			application.ConfigFileSource(*configFile),
+			application.EnvironmentSource(""),
+		),
 		application.WithModule("poller", poller.New()),
 		application.WithModule("http", httpmodule.New()),
 	)

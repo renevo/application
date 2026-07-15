@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -15,16 +16,35 @@ type environmentSettingsSource struct {
 	prefix   string
 }
 
+// EnvironmentSource reads registered settings from environment variables.
+// Prefix is normalized when the source loads; an invalid prefix fails loading.
+func EnvironmentSource(prefix string) config.Source {
+	return environmentSettingsSource{prefix: prefix}
+}
+
 type environmentSetting struct {
 	name string
 	path string
 }
 
-func (source environmentSettingsSource) Load(context.Context) ([]config.RawValue, error) {
+func (source environmentSettingsSource) Load(ctx context.Context) ([]config.RawValue, error) {
+	prefix, err := normalizeEnvironmentPrefix(source.prefix)
+	if err != nil {
+		return nil, err
+	}
+	registry := source.settings
+	if registry == nil {
+		app := FromContext(ctx)
+		if app == nil {
+			return nil, errors.New("environment source requires an application context")
+		}
+		registry = app.settings
+	}
+
 	settings := make([]environmentSetting, 0)
-	source.settings.Range(func(path string, _ *config.Setting) bool {
+	registry.Range(func(path string, _ *config.Setting) bool {
 		settings = append(settings, environmentSetting{
-			name: environmentName(source.prefix, path),
+			name: environmentName(prefix, path),
 			path: path,
 		})
 		return true
