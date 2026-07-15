@@ -69,9 +69,9 @@ func (source configFileSource) Load(ctx context.Context) ([]config.RawValue, err
 	}
 	transaction.fileLoaded = true
 
-	src, err := os.ReadFile(source.filename)
-	if err != nil {
-		return nil, err
+	src, diags := readConfigurationFile(source.filename)
+	if diags.HasErrors() {
+		return nil, diags
 	}
 	values, bindings, diags := (Configuration{}).decodeSource(ctx, source.filename, src)
 	if diags.HasErrors() {
@@ -85,14 +85,17 @@ func (source hclSettingsSource) Load(context.Context) ([]config.RawValue, error)
 	return slices.Clone(source.values), nil
 }
 
-// DecodeFile reads filename and performs an initial configuration load. The
-// filename extension selects native HCL or JSON syntax. Read, parse, schema,
-// validation, and commit failures are returned as HCL diagnostics.
+// DecodeFile reads filename and performs an initial configuration load using
+// the file followed by unprefixed environment values. It does not use sources
+// configured with WithConfigSources. The filename extension selects native HCL
+// or JSON syntax. Failures are returned as HCL diagnostics.
 func (c Configuration) DecodeFile(ctx context.Context, filename string) hcl.Diagnostics {
 	return c.decodeFile(ctx, filename, false)
 }
 
-// ReloadFile reads filename and atomically reloads registered settings.
+// ReloadFile reads filename and atomically reloads registered settings using
+// the file followed by unprefixed environment values. It does not use sources
+// configured with WithConfigSources.
 // Structured targets registered with Context.BindConfig are validated but not
 // reassigned. Failures are returned as diagnostics and preserve committed settings.
 func (c Configuration) ReloadFile(ctx context.Context, filename string) hcl.Diagnostics {
@@ -100,10 +103,19 @@ func (c Configuration) ReloadFile(ctx context.Context, filename string) hcl.Diag
 }
 
 func (c Configuration) decodeFile(ctx context.Context, filename string, reload bool) hcl.Diagnostics {
+	src, diags := readConfigurationFile(filename)
+	if diags.HasErrors() {
+		return diags
+	}
+
+	return c.decode(ctx, filename, src, reload)
+}
+
+func readConfigurationFile(filename string) ([]byte, hcl.Diagnostics) {
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return hcl.Diagnostics{
+			return nil, hcl.Diagnostics{
 				{
 					Severity: hcl.DiagError,
 					Summary:  "Configuration file not found",
@@ -112,7 +124,7 @@ func (c Configuration) decodeFile(ctx context.Context, filename string, reload b
 			}
 		}
 
-		return hcl.Diagnostics{
+		return nil, hcl.Diagnostics{
 			{
 				Severity: hcl.DiagError,
 				Summary:  "Failed to read configuration",
@@ -120,13 +132,13 @@ func (c Configuration) decodeFile(ctx context.Context, filename string, reload b
 			},
 		}
 	}
-
-	return c.decode(ctx, filename, src, reload)
+	return src, nil
 }
 
-// Decode performs an initial configuration load from src. The filename is used
-// to select HCL or JSON syntax and to identify diagnostic source ranges. The
-// context must carry an Application.
+// Decode performs an initial configuration load from src followed by
+// unprefixed environment values. It does not use sources configured with
+// WithConfigSources. The filename selects HCL or JSON syntax and identifies
+// diagnostic source ranges. The context must carry an Application.
 func (c Configuration) Decode(ctx context.Context, filename string, src []byte) hcl.Diagnostics {
 	return c.decode(ctx, filename, src, false)
 }

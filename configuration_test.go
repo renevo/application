@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +171,18 @@ func TestApplicationConfiguration(t *testing.T) {
 			},
 		},
 		{
+			name: "missing file diagnostics",
+			run: func(t *testing.T, is *is.I) {
+				filename := filepath.Join(t.TempDir(), "missing.hcl")
+				application, err := New("test", "1.0.0", withTestConfigFile(filename), WithModule("http", new(settingsHCLModule)))
+				is.NoErr(err)
+				err = application.Validate(context.Background())
+				is.True(err != nil)
+				is.True(strings.Contains(err.Error(), "Configuration file not found"))
+				is.True(strings.Contains(err.Error(), filename))
+			},
+		},
+		{
 			name: "environment overrides file",
 			run: func(t *testing.T, is *is.I) {
 				t.Setenv("MYAPP_HTTP_READ_TIMEOUT", "25s")
@@ -215,6 +229,7 @@ func TestApplicationConfiguration(t *testing.T) {
 				runDone := make(chan error, 1)
 				go func() { runDone <- application.Run(context.Background()) }()
 				<-started
+				waitForApplicationState(t, application, StateRunning)
 				is.Equal(module.readTimeout, 15*time.Second) // initial preparation should load the environment value
 
 				is.NoErr(os.Setenv("HTTP_READ_TIMEOUT", "invalid"))
@@ -244,6 +259,7 @@ func TestApplicationConfiguration(t *testing.T) {
 				runDone := make(chan error, 1)
 				go func() { runDone <- application.Run(context.Background()) }()
 				<-started
+				waitForApplicationState(t, application, StateRunning)
 
 				writeTestConfig(is, filename, `http { read_timeout = "invalid" }`)
 				is.True(application.Reload(context.Background()) != nil) // invalid reload should report a decoding error
@@ -278,6 +294,7 @@ route "health" { target = "/healthz" }
 				runDone := make(chan error, 1)
 				go func() { runDone <- application.Run(context.Background()) }()
 				<-started
+				waitForApplicationState(t, application, StateRunning)
 				is.Equal(settingsModule.readTimeout, 15*time.Second)
 				is.Equal(routerModule.config.Routes[0].Target, "/healthz")
 
@@ -411,4 +428,15 @@ backend {
 
 func withTestConfigFile(filename string) Option {
 	return WithConfigSources(ConfigFileSource(filename), EnvironmentSource(""))
+}
+
+func waitForApplicationState(t *testing.T, application *Application, want State) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for application.State() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("application state = %s, want %s", application.State(), want)
+		}
+		runtime.Gosched()
+	}
 }

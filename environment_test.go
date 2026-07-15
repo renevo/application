@@ -76,20 +76,39 @@ func TestEnvironmentSourcePrefix(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			is := is.New(t)
-			application, err := New("test", "1.0.0", WithConfigSources(EnvironmentSource(test.input)))
+			module := &environmentSourceModule{value: "default"}
+			application, err := New(
+				"test",
+				"1.0.0",
+				WithConfigSources(EnvironmentSource(test.input)),
+				WithModule("environment", module),
+			)
 			is.NoErr(err)
+			if test.valid {
+				t.Setenv(environmentName(test.want, "value"), "from-environment")
+			}
 			err = application.Validate(context.Background())
 			if !test.valid {
 				is.True(err != nil) // invalid prefixes should fail when the source loads
 				return
 			}
 			is.NoErr(err) // portable prefixes should load successfully
-			prefix, normalizeErr := normalizeEnvironmentPrefix(test.input)
-			is.NoErr(normalizeErr)
-			is.Equal(prefix, test.want)
+			is.Equal(module.value, "from-environment")
 		})
 	}
 }
+
+type environmentSourceModule struct {
+	value string
+}
+
+func (module *environmentSourceModule) Initialize(ctx *Context) error {
+	ctx.Settings().Setting("value", &module.value, "test value")
+	return nil
+}
+
+func (*environmentSourceModule) Start(*Context) error { return nil }
+func (*environmentSourceModule) Stop(*Context) error  { return nil }
 
 func settingsPath(settings *config.Set) string {
 	var path string
