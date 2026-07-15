@@ -207,6 +207,37 @@ settings.
 
 Both native HCL (`.hcl`) and JSON (`.json`) files are supported.
 
+### Starter configuration
+
+`Application.WriteConfigTemplate` writes a complete native HCL starter file
+from defaults registered during module initialization. It does not read the
+configured file or environment variables, so it can create the file selected
+by `WithConfigFile` before that file exists.
+
+```go
+filename := "application.hcl"
+file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+if err != nil {
+	return err
+}
+
+if err := app.WriteConfigTemplate(context.Background(), file); err != nil {
+	_ = file.Close()
+	_ = os.Remove(filename)
+	return err
+}
+if err := file.Close(); err != nil {
+	_ = os.Remove(filename)
+	return err
+}
+```
+
+Scalar setting descriptions and structured `description` tags become HCL
+comments. Built-in booleans and numbers use native HCL literals, while strings
+and `time.Duration` use readable quoted strings. Nil or empty structured block
+fields produce one commented example block. Template generation is terminal
+for the `Application`; construct a new application before calling `Run`.
+
 ## Shutdown and Signals
 
 `Application.Shutdown` is idempotent and nonblocking. The first shutdown cause
