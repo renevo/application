@@ -97,7 +97,8 @@ func New(name, version string, opts ...Option) (*Application, error) {
 		state:           StateNew,
 		shutdownTimeout: 30 * time.Second,
 	}
-	app.configSources = []config.Source{EnvironmentSource("")}
+
+	app.configSources = []config.Source{config.EnvironmentSource("")}
 
 	for _, opt := range opts {
 		if opt != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -56,7 +57,7 @@ func ConfigFileSource(filename string) config.Source {
 	return configFileSource{filename: filename}
 }
 
-func (source configFileSource) Load(ctx context.Context) ([]config.RawValue, error) {
+func (source configFileSource) Load(ctx context.Context, _ iter.Seq[config.SettingMetadata]) ([]config.RawValue, error) {
 	if source.filename == "" {
 		return nil, errors.New("configuration filename must not be empty")
 	}
@@ -81,7 +82,7 @@ func (source configFileSource) Load(ctx context.Context) ([]config.RawValue, err
 	return values, nil
 }
 
-func (source hclSettingsSource) Load(context.Context) ([]config.RawValue, error) {
+func (source hclSettingsSource) Load(_ context.Context, _ iter.Seq[config.SettingMetadata]) ([]config.RawValue, error) {
 	return slices.Clone(source.values), nil
 }
 
@@ -152,9 +153,9 @@ func (c Configuration) decode(ctx context.Context, filename string, src []byte, 
 	app := FromContext(ctx)
 	var loadErr error
 	if reload {
-		loadErr = app.settings.Reload(ctx, hclSettingsSource{values: values}, EnvironmentSource(""))
+		loadErr = app.settings.Reload(ctx, hclSettingsSource{values: values}, config.EnvironmentSource(""))
 	} else {
-		loadErr = app.settings.Load(ctx, hclSettingsSource{values: values}, EnvironmentSource(""))
+		loadErr = app.settings.Load(ctx, hclSettingsSource{values: values}, config.EnvironmentSource(""))
 	}
 	if loadErr != nil {
 		return diags.Append(&hcl.Diagnostic{

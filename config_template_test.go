@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,15 +17,49 @@ import (
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/matryer/is"
+	"github.com/renevo/config"
 )
 
+type templateNamedBool bool
+type templateNamedInt int
+type templateNamedUint uint
+type templateNamedFloat float64
+type templateNamedString string
+type templateCustomValue struct{}
+type templateCustomInt int
+
+type templateCustomIntCodec struct{}
+
+func (templateCustomIntCodec) Parse(text string) (any, error) {
+	value, err := strconv.Atoi(strings.TrimSuffix(text, " units"))
+	if err != nil {
+		return nil, err
+	}
+	result := templateCustomInt(value)
+	return &result, nil
+}
+
+func (templateCustomIntCodec) Format(value any) (string, error) {
+	return strconv.Itoa(int(*value.(*templateCustomInt))) + " units", nil
+}
+
+func (templateCustomIntCodec) Equal(left, right any) bool {
+	return *left.(*templateCustomInt) == *right.(*templateCustomInt)
+}
+
 type templateTestModule struct {
-	enabled bool
-	count   int
-	ratio   float64
-	name    string
-	timeout time.Duration
-	config  struct {
+	enabled      bool
+	count        int
+	ratio        float64
+	name         string
+	timeout      time.Duration
+	namedEnabled templateNamedBool
+	namedCount   templateNamedInt
+	namedLimit   templateNamedUint
+	namedRatio   templateNamedFloat
+	namedName    templateNamedString
+	customCount  templateCustomInt
+	config       struct {
 		Prefix string `config:"prefix,optional" description:"Route prefix"`
 		Routes []struct {
 			Name   string `config:"name,label"`
@@ -35,11 +71,17 @@ type templateTestModule struct {
 
 func newTemplateTestModule() *templateTestModule {
 	module := &templateTestModule{
-		enabled: true,
-		count:   10,
-		ratio:   1.5,
-		name:    "worker",
-		timeout: 5 * time.Second,
+		enabled:      true,
+		count:        10,
+		ratio:        1.5,
+		name:         "worker",
+		timeout:      5 * time.Second,
+		namedEnabled: true,
+		namedCount:   12,
+		namedLimit:   20,
+		namedRatio:   2.5,
+		namedName:    "named-worker",
+		customCount:  7,
 	}
 	module.config.Prefix = "/api"
 	return module
@@ -52,6 +94,12 @@ func (module *templateTestModule) Initialize(ctx *Context) error {
 	settings.Setting("ratio", &module.ratio, "Worker ratio")
 	settings.Setting("name", &module.name, "Worker name")
 	settings.Setting("timeout", &module.timeout, "Worker timeout")
+	settings.Setting("named-enabled", &module.namedEnabled, "Named worker enabled")
+	settings.Setting("named-count", &module.namedCount, "Named worker count")
+	settings.Setting("named-limit", &module.namedLimit, "Named worker limit")
+	settings.Setting("named-ratio", &module.namedRatio, "Named worker ratio")
+	settings.Setting("named-name", &module.namedName, "Named worker name")
+	settings.Setting("custom-count", &module.customCount, "Custom worker count", config.WithCodec(templateCustomIntCodec{}))
 	return ctx.BindConfig(&module.config)
 }
 
@@ -81,6 +129,12 @@ func TestWriteConfigTemplate(t *testing.T) {
 	is.True(strings.Contains(source, "ratio = 1.5"))                         // floating-point defaults should use native HCL literals
 	is.True(strings.Contains(source, "name = \"worker\""))                   // strings should remain quoted HCL strings
 	is.True(strings.Contains(source, "timeout = \"5s\""))                    // durations should use readable quoted strings
+	is.True(strings.Contains(source, "named-enabled = true"))                // named booleans should use native HCL literals
+	is.True(strings.Contains(source, "named-count = 12"))                    // named signed integers should use native HCL literals
+	is.True(strings.Contains(source, "named-limit = 20"))                    // named unsigned integers should use native HCL literals
+	is.True(strings.Contains(source, "named-ratio = 2.5"))                   // named floating-point values should use native HCL literals
+	is.True(strings.Contains(source, "named-name = \"named-worker\""))       // named strings should remain quoted HCL strings
+	is.True(strings.Contains(source, "custom-count = \"7 units\""))          // custom codec text should remain a quoted HCL string
 	is.True(strings.Contains(source, "# Route prefix\nprefix = \"/api\""))   // structured descriptions should precede active defaults
 	is.True(strings.Contains(source, "# HTTP route\n# route \"example\" {")) // empty repeated blocks should produce one commented example
 	is.True(strings.Contains(source, "enabled = true\n\n  # Worker name"))   // described scalar settings should be separated by a blank line
@@ -97,20 +151,32 @@ func TestWriteConfigTemplate(t *testing.T) {
 	roundTripModule.ratio = 0
 	roundTripModule.name = ""
 	roundTripModule.timeout = 0
+	roundTripModule.namedEnabled = false
+	roundTripModule.namedCount = 0
+	roundTripModule.namedLimit = 0
+	roundTripModule.namedRatio = 0
+	roundTripModule.namedName = ""
+	roundTripModule.customCount = 0
 	roundTripModule.config.Prefix = ""
 	roundTrip, err := New(
 		"test", "1.0.0",
 		withTestConfigFile(generatedFile),
 		WithModule("worker", roundTripModule),
 	)
-	is.NoErr(err)                                      // fresh application construction should accept generated HCL
-	is.NoErr(roundTrip.Validate(context.Background())) // generated active defaults should decode successfully
-	is.Equal(roundTripModule.enabled, true)            // boolean default should survive the HCL round trip
-	is.Equal(roundTripModule.count, 10)                // integer default should survive the HCL round trip
-	is.Equal(roundTripModule.ratio, 1.5)               // float default should survive the HCL round trip
-	is.Equal(roundTripModule.name, "worker")           // string default should survive the HCL round trip
-	is.Equal(roundTripModule.timeout, 5*time.Second)   // duration default should survive the HCL round trip
-	is.Equal(roundTripModule.config.Prefix, "/api")    // structured attribute default should survive the HCL round trip
+	is.NoErr(err)                                                            // fresh application construction should accept generated HCL
+	is.NoErr(roundTrip.Validate(context.Background()))                       // generated active defaults should decode successfully
+	is.Equal(roundTripModule.enabled, true)                                  // boolean default should survive the HCL round trip
+	is.Equal(roundTripModule.count, 10)                                      // integer default should survive the HCL round trip
+	is.Equal(roundTripModule.ratio, 1.5)                                     // float default should survive the HCL round trip
+	is.Equal(roundTripModule.name, "worker")                                 // string default should survive the HCL round trip
+	is.Equal(roundTripModule.timeout, 5*time.Second)                         // duration default should survive the HCL round trip
+	is.Equal(roundTripModule.namedEnabled, templateNamedBool(true))          // named boolean defaults should survive the HCL round trip
+	is.Equal(roundTripModule.namedCount, templateNamedInt(12))               // named signed integer defaults should survive the HCL round trip
+	is.Equal(roundTripModule.namedLimit, templateNamedUint(20))              // named unsigned integer defaults should survive the HCL round trip
+	is.Equal(roundTripModule.namedRatio, templateNamedFloat(2.5))            // named floating-point defaults should survive the HCL round trip
+	is.Equal(roundTripModule.namedName, templateNamedString("named-worker")) // named string defaults should survive the HCL round trip
+	is.Equal(roundTripModule.customCount, templateCustomInt(7))              // custom codec defaults should survive the HCL round trip
+	is.Equal(roundTripModule.config.Prefix, "/api")                          // structured attribute default should survive the HCL round trip
 
 	err = application.Run(context.Background())
 	is.True(errors.Is(err, ErrInvalidState)) // successful template generation should make later Run invalid
@@ -129,27 +195,37 @@ func TestWriteConfigTemplate(t *testing.T) {
 func TestScalarTemplateValue(t *testing.T) {
 	tests := []struct {
 		name      string
-		valueType string
+		valueType reflect.Type
 		value     string
 		want      string
 	}{
-		{name: "bool", valueType: "bool", value: "true", want: "true"},
-		{name: "int", valueType: "int", value: "-1", want: "-1"},
-		{name: "int8", valueType: "int8", value: "-8", want: "-8"},
-		{name: "int16", valueType: "int16", value: "-16", want: "-16"},
-		{name: "int32", valueType: "int32", value: "-32", want: "-32"},
-		{name: "int64", valueType: "int64", value: "-64", want: "-64"},
-		{name: "uint", valueType: "uint", value: "1", want: "1"},
-		{name: "uint8", valueType: "uint8", value: "8", want: "8"},
-		{name: "uint16", valueType: "uint16", value: "16", want: "16"},
-		{name: "uint32", valueType: "uint32", value: "32", want: "32"},
-		{name: "uint64", valueType: "uint64", value: "18446744073709551615", want: "18446744073709551615"},
-		{name: "uintptr", valueType: "uintptr", value: "64", want: "64"},
-		{name: "float32", valueType: "float32", value: "1.25", want: "1.25"},
-		{name: "float64", valueType: "float64", value: "2.5", want: "2.5"},
-		{name: "string", valueType: "string", value: "42", want: `"42"`},
-		{name: "duration", valueType: "time.Duration", value: "5s", want: `"5s"`},
-		{name: "named int fallback", valueType: "application.namedInt", value: "42", want: `"42"`},
+		{name: "bool", valueType: reflect.TypeFor[bool](), value: "true", want: "true"},
+		{name: "named bool", valueType: reflect.TypeFor[templateNamedBool](), value: "false", want: "false"},
+		{name: "int", valueType: reflect.TypeFor[int](), value: "-1", want: "-1"},
+		{name: "int8", valueType: reflect.TypeFor[int8](), value: "-8", want: "-8"},
+		{name: "int16", valueType: reflect.TypeFor[int16](), value: "-16", want: "-16"},
+		{name: "int32", valueType: reflect.TypeFor[int32](), value: "-32", want: "-32"},
+		{name: "int64", valueType: reflect.TypeFor[int64](), value: "-64", want: "-64"},
+		{name: "named int", valueType: reflect.TypeFor[templateNamedInt](), value: "42", want: "42"},
+		{name: "uint", valueType: reflect.TypeFor[uint](), value: "1", want: "1"},
+		{name: "uint8", valueType: reflect.TypeFor[uint8](), value: "8", want: "8"},
+		{name: "uint16", valueType: reflect.TypeFor[uint16](), value: "16", want: "16"},
+		{name: "uint32", valueType: reflect.TypeFor[uint32](), value: "32", want: "32"},
+		{name: "uint64", valueType: reflect.TypeFor[uint64](), value: "18446744073709551615", want: "18446744073709551615"},
+		{name: "uintptr", valueType: reflect.TypeFor[uintptr](), value: "64", want: "64"},
+		{name: "named uint", valueType: reflect.TypeFor[templateNamedUint](), value: "24", want: "24"},
+		{name: "float32", valueType: reflect.TypeFor[float32](), value: "1.25", want: "1.25"},
+		{name: "float64", valueType: reflect.TypeFor[float64](), value: "2.5", want: "2.5"},
+		{name: "named float", valueType: reflect.TypeFor[templateNamedFloat](), value: "3.5", want: "3.5"},
+		{name: "string", valueType: reflect.TypeFor[string](), value: "42", want: `"42"`},
+		{name: "named string", valueType: reflect.TypeFor[templateNamedString](), value: "42", want: `"42"`},
+		{name: "duration", valueType: reflect.TypeFor[time.Duration](), value: "5s", want: `"5s"`},
+		{name: "pointer", valueType: reflect.TypeFor[*templateNamedInt](), value: "42", want: "42"},
+		{name: "multi-level pointer", valueType: reflect.TypeFor[**templateNamedInt](), value: "42", want: "42"},
+		{name: "custom value fallback", valueType: reflect.TypeFor[templateCustomValue](), value: "custom", want: `"custom"`},
+		{name: "nil type fallback", value: "custom", want: `"custom"`},
+		{name: "custom bool text fallback", valueType: reflect.TypeFor[bool](), value: "yes", want: `"yes"`},
+		{name: "custom number text fallback", valueType: reflect.TypeFor[int](), value: "one", want: `"one"`},
 	}
 
 	for _, test := range tests {

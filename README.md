@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/renevo/application"
+	"github.com/renevo/config"
 )
 
 type worker struct {
@@ -81,7 +82,7 @@ func main() {
 		"1.0.0",
 		application.WithConfigSources(
 			application.ConfigFileSource("application.hcl"),
-			application.EnvironmentSource(""),
+			config.EnvironmentSource(""),
 		),
 		application.WithModule("worker", &worker{interval: 30 * time.Second}),
 	)
@@ -157,20 +158,22 @@ Dots and other separators become underscores and names are uppercased, so
 `HTTP_SERVER_READ_TIMEOUT`.
 
 `WithConfigSources` replaces the complete ordered source list. Later sources
-override earlier sources. Use `EnvironmentSource` to namespace generated names:
+override earlier sources. Use `config.EnvironmentSource` with a prefix to
+namespace generated environment variable names:
 
 ```go
 app, err := application.New(
 	"example",
 	"1.0.0",
-	application.WithConfigSources(application.EnvironmentSource("MYAPP")),
+	application.WithConfigSources(config.EnvironmentSource("MYAPP")),
 )
 ```
 
 The prefixed address setting is read from `MYAPP_HTTP_ADDRESS`. Prefixes are
-uppercased and surrounding underscores are removed. Invalid portable identifier
-characters fail when configuration loads. Calling `WithConfigSources()` with no
-arguments disables external sources and loads registered defaults only.
+uppercased and otherwise preserved. They may contain ASCII letters, digits, and
+underscores, and must start with a letter or underscore. Invalid prefixes fail
+when configuration loads. Calling `WithConfigSources()` with no arguments
+disables external sources and loads registered defaults only.
 
 For the common `ConfigFileSource(file), EnvironmentSource(prefix)` ordering,
 scalar precedence is registered default, then HCL or JSON, then environment.
@@ -238,10 +241,12 @@ if err := file.Close(); err != nil {
 ```
 
 Scalar setting descriptions and structured `description` tags become HCL
-comments. Built-in booleans and numbers use native HCL literals, while strings
-and `time.Duration` use readable quoted strings. Nil or empty structured block
-fields produce one commented example block. Template generation is terminal
-for the `Application`; construct a new application before calling `Run`.
+comments. Formatted defaults for boolean and numeric value types use native HCL
+literals when valid; other formatted defaults use quoted HCL strings. Strings
+and `time.Duration` therefore remain readable, and custom codec text such as
+`7 units` is preserved. Nil or empty structured block fields produce one
+commented example block. Template generation is terminal for the `Application`;
+construct a new application before calling `Run`.
 
 ## Shutdown and Signals
 

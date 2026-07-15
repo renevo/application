@@ -11,6 +11,7 @@ import (
 	"github.com/renevo/application"
 	httpmodule "github.com/renevo/application/examples/simple/modules/http"
 	"github.com/renevo/application/examples/simple/modules/poller"
+	"github.com/renevo/config"
 )
 
 func main() {
@@ -23,7 +24,7 @@ func main() {
 		"1.0.0",
 		application.WithConfigSources(
 			application.ConfigFileSource(*configFile),
-			application.EnvironmentSource(""),
+			config.EnvironmentSource(""),
 		),
 		application.WithModule("poller", poller.New()),
 		application.WithModule("http", httpmodule.New()),

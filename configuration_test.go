@@ -14,6 +14,7 @@ import (
 	"github.com/matryer/is"
 
 	"github.com/renevo/application/confighcl"
+	"github.com/renevo/config"
 )
 
 func TestHCL(t *testing.T) {
@@ -192,7 +193,7 @@ func TestApplicationConfiguration(t *testing.T) {
 				application, err := New(
 					"test",
 					"1.0.0",
-					WithConfigSources(ConfigFileSource(filename), EnvironmentSource("myapp_")),
+					WithConfigSources(ConfigFileSource(filename), config.EnvironmentSource("myapp")),
 					WithModule("http", module),
 				)
 				is.NoErr(err)                                        // application construction should normalize the environment prefix
@@ -210,7 +211,7 @@ func TestApplicationConfiguration(t *testing.T) {
 				application, err := New(
 					"test",
 					"1.0.0",
-					WithConfigSources(EnvironmentSource(""), ConfigFileSource(filename)),
+					WithConfigSources(config.EnvironmentSource(""), ConfigFileSource(filename)),
 					WithModule("http", module),
 				)
 				is.NoErr(err)
@@ -427,7 +428,7 @@ backend {
 }
 
 func withTestConfigFile(filename string) Option {
-	return WithConfigSources(ConfigFileSource(filename), EnvironmentSource(""))
+	return WithConfigSources(ConfigFileSource(filename), config.EnvironmentSource(""))
 }
 
 func waitForApplicationState(t *testing.T, application *Application, want State) {
