@@ -183,6 +183,15 @@ func TestWriteConfigTemplateFailures(t *testing.T) {
 		is.Equal(application.State(), StateFailed) // write failure after initialization should fail the application
 	})
 
+	t.Run("short writer", func(t *testing.T) {
+		application, err := New("test", "1.0.0", WithModule("worker", newTemplateTestModule()))
+		is := is.New(t)
+		is.NoErr(err) // application construction should succeed
+		err = application.WriteConfigTemplate(context.Background(), shortWriter{})
+		is.True(errors.Is(err, io.ErrShortWrite))  // nil-error short writes should be normalized to the standard sentinel
+		is.Equal(application.State(), StateFailed) // short writes after initialization should fail the application
+	})
+
 	t.Run("configuration collision", func(t *testing.T) {
 		module := newTemplateTestModule()
 		application, err := New("test", "1.0.0", WithModule("worker", module))
@@ -205,6 +214,12 @@ type errorWriter struct{}
 func (errorWriter) Write([]byte) (int, error) { return 0, errTemplateWrite }
 
 var _ io.Writer = errorWriter{}
+
+type shortWriter struct{}
+
+func (shortWriter) Write(buffer []byte) (int, error) { return len(buffer) - 1, nil }
+
+var _ io.Writer = shortWriter{}
 
 type templateBindingModule struct {
 	target any
