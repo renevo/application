@@ -104,6 +104,12 @@ func TestAppendTemplateRejectsLossyBlocks(t *testing.T) {
 			}{},
 		},
 		{
+			name: "raw HCL body block",
+			target: &struct {
+				Block *hclsyntax.Body `config:"block,block"`
+			}{},
+		},
+		{
 			name: "non-string label",
 			target: &struct {
 				Blocks []struct {
@@ -123,6 +129,33 @@ func TestAppendTemplateRejectsLossyBlocks(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			err := AppendTemplate(test.target, hclwrite.NewEmptyFile().Body())
 			is.New(t).True(err != nil) // lossy or decoder-incompatible block schemas should be rejected
+		})
+	}
+}
+
+func TestAppendTemplateRejectsLossyAttributes(t *testing.T) {
+	tests := []struct {
+		name   string
+		target any
+	}{
+		{
+			name: "raw HCL attribute",
+			target: &struct {
+				Attribute *hcl.Attribute `config:"attribute"`
+			}{},
+		},
+		{
+			name: "raw HCL expression implementation",
+			target: &struct {
+				Expression *hclsyntax.LiteralValueExpr `config:"expression"`
+			}{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := AppendTemplate(test.target, hclwrite.NewEmptyFile().Body())
+			is.New(t).True(strings.Contains(err.Error(), "cannot synthesize attribute")) // raw HCL attribute carriers should be rejected before value encoding
 		})
 	}
 }

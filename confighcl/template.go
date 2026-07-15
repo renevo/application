@@ -172,14 +172,14 @@ func appendBlockFieldTemplate(name, description string, field reflect.Value, fie
 	if sequence {
 		elementType = fieldType.Elem()
 	}
-	if elementType == blockType {
+	if typeOrPointerAssignableTo(elementType, blockType) {
 		return fmt.Errorf("cannot synthesize block %q from raw %s", name, elementType)
 	}
 	pointer := elementType.Kind() == reflect.Pointer
 	if pointer {
 		elementType = elementType.Elem()
 	}
-	if elementType.Kind() != reflect.Struct || bodyType.AssignableTo(elementType) || attrsType.AssignableTo(elementType) {
+	if elementType.Kind() != reflect.Struct || typeOrPointerAssignableTo(elementType, bodyType) || typeOrPointerAssignableTo(elementType, attrsType) {
 		return fmt.Errorf("cannot synthesize block %q from %s", name, fieldType)
 	}
 
@@ -268,10 +268,14 @@ func templateValue(value reflect.Value) (cty.Value, error) {
 }
 
 func isUnsupportedAttributeType(valueType reflect.Type) bool {
+	return typeOrPointerAssignableTo(valueType, exprType) || typeOrPointerAssignableTo(valueType, attrType)
+}
+
+func typeOrPointerAssignableTo(valueType, targetType reflect.Type) bool {
 	for valueType.Kind() == reflect.Pointer {
 		valueType = valueType.Elem()
 	}
-	return exprType.AssignableTo(valueType) || attrType.AssignableTo(valueType)
+	return valueType.AssignableTo(targetType) || reflect.PointerTo(valueType).AssignableTo(targetType)
 }
 
 func appendDescription(dst *hclwrite.Body, description string) {
